@@ -1,0 +1,114 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI Variable Text", "Noto Sans KR", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(255, 176, 79, 0.18), transparent 34%),
+    linear-gradient(180deg, #121b27, #0b121c);
+  color: #f6f8fc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.popup-shell {
+  padding: 12px;
+}
+
+.popup-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(14, 22, 34, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+}
+
+.popup-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.popup-eyebrow {
+  margin: 0 0 4px;
+  color: #ffcf75;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.popup-header h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.popup-status {
+  margin: 0;
+  color: rgba(226, 233, 241, 0.82);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.toggle-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.popup-field {
+  display: grid;
+  gap: 6px;
+}
+
+.popup-field span,
+.popup-check span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.popup-field input,
+.popup-field select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f6f8fc;
+}
+
+.popup-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popup-button {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 800;
+  color: #0e1723;
+  background: linear-gradient(135deg, #ffc96f, #ffb449);
+  cursor: pointer;
+}

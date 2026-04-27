@@ -1,0 +1,366 @@
+export interface CaptionCue {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface CaptionTrack {
+  baseUrl: string;
+  languageCode: string;
+  kind?: string;
+  name?: string;
+}
+
+export interface CaptionTracksMessage {
+  source: 'local-subtitle-translator';
+  type: '__LST_CAPTION_TRACKS__';
+  tracks: CaptionTrack[];
+  videoId: string | null;
+  isLive: boolean;
+  error?: string;
+}
+
+interface Json3Segment {
+  utf8?: string;
+}
+
+interface Json3Event {
+  tStartMs?: number;
+  dDurationMs?: number;
+  segs?: Json3Segment[];
+  aAppend?: number;
+}
+
+interface Json3Payload {
+  events?: Json3Event[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function isCaptionTracksMessage(value: unknown): value is CaptionTracksMessage {
+  if (!isRecord(value)) return false;
+  if (value.source !== 'local-subtitle-translator') return false;
+  if (value.type !== '__LST_CAPTION_TRACKS__') return false;
+  if (!Array.isArray(value.tracks)) return false;
+  return true;
+}
+
+export function pickCaptionTrack(
+  tracks: CaptionTrack[],
+  preferredLanguage = 'en',
+): CaptionTrack | null {
+  if (tracks.length === 0) return null;
+
+  const prefix = preferredLanguage.toLowerCase().slice(0, 2);
+  const byLang = (t: CaptionTrack) =>
+    typeof t.languageCode === 'string' &&
+    t.languageCode.toLowerCase().startsWith(prefix);
+
+  const manualPreferred = tracks.find((t) => !t.kind && byLang(t));
+  if (manualPreferred) return manualPreferred;
+
+  const asrPreferred = tracks.find((t) => t.kind === 'asr' && byLang(t));
+  if (asrPreferred) return asrPreferred;
+
+  const anyManual = tracks.find((t) => !t.kind);
+  if (anyManual) return anyManual;
+
+  return tracks[0] ?? null;
+}
+
+function eventText(event: Json3Event): string {
+  if (!Array.isArray(event.segs)) return '';
+  return event.segs
+    .map((s) => (typeof s.utf8 === 'string' ? s.utf8 : ''))
+    .join('');
+}
+
+export function parseJson3(payload: unknown): CaptionCue[] {
+  if (!isRecord(payload)) return [];
+  const events = (payload as Json3Payload).events;
+  if (!Array.isArray(events)) return [];
+
+  const cues: CaptionCue[] = [];
+  for (const event of events) {
+    if (event.aAppend === 1) {
+      const last = cues[cues.length - 1];
+      if (!last) continue;
+      const appended = eventText(event);
+      if (!appended) continue;
+      const merged = (last.text + ' ' + appended).replace(/\s+/g, ' ').trim();
+      cues[cues.length - 1] = { ...last, text: merged };
+      continue;
+    }
+
+    const startMs = event.tStartMs;
+    const durationMs = event.dDurationMs;
+    if (typeof startMs !== 'number' || typeof durationMs !== 'number') continue;
+    if (durationMs <= 0) continue;
+
+    const text = eventText(event).replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+
+    cues.push({
+      start: startMs / 1000,
+      end: (startMs + durationMs) / 1000,
+      text,
+    });
+  }
+
+  cues.sort((a, b) => a.start - b.start);
+  return cues;
+}
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
+function extractElementText(element: Element): string {
+  const raw = element.textContent ?? '';
+  return decodeEntities(raw).replace(/\s+/g, ' ').trim();
+}
+
+export function parseXmlCaptions(xml: string): CaptionCue[] {
+  let doc: Document;
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml');
+  } catch {
+    return [];
+  }
+
+  if (doc.getElementsByTagName('parsererror').length > 0) {
+    return [];
+  }
+
+  const cues: CaptionCue[] = [];
+
+  const pElements = doc.querySelectorAll('p');
+  for (const p of Array.from(pElements)) {
+    const t = p.getAttribute('t');
+    const d = p.getAttribute('d');
+    if (t === null || d === null) continue;
+    const startMs = Number(t);
+    const durationMs = Number(d);
+    if (!Number.isFinite(startMs) || !Number.isFinite(durationMs)) continue;
+    if (durationMs <= 0) continue;
+    const text = extractElementText(p);
+    if (!text) continue;
+    cues.push({
+      start: startMs / 1000,
+      end: (startMs + durationMs) / 1000,
+      text,
+    });
+  }
+
+  if (cues.length === 0) {
+    const textElements = doc.querySelectorAll('text');
+    for (const el of Array.from(textElements)) {
+      const startAttr = el.getAttribute('start');
+      const durAttr = el.getAttribute('dur');
+      if (startAttr === null) continue;
+      const start = Number(startAttr);
+      const duration = Number(durAttr ?? '0');
+      if (!Number.isFinite(start) || !Number.isFinite(duration)) continue;
+      if (duration <= 0) continue;
+      const text = extractElementText(el);
+      if (!text) continue;
+      cues.push({ start, end: start + duration, text });
+    }
+  }
+
+  cues.sort((a, b) => a.start - b.start);
+  return cues;
+}
+
+function parseCaptionBody(body: string): CaptionCue[] {
+  const trimmed = body.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('{')) {
+    try {
+      return parseJson3(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+  if (trimmed.startsWith('<')) {
+    return parseXmlCaptions(trimmed);
+  }
+  return [];
+}
+
+async function fetchTimedtextBody(
+  baseUrl: string,
+  fmt: string | null,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  const url = new URL(baseUrl, location.origin);
+  if (fmt !== null) {
+    url.searchParams.set('fmt', fmt);
+  }
+
+  const response = await fetch(url.toString(), {
+    credentials: 'include',
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  return response.text();
+}
+
+function buildTrackMatcher(baseUrl: string): (url: string) => boolean {
+  let target: URL | null = null;
+  try {
+    target = new URL(baseUrl, location.origin);
+  } catch {
+    target = null;
+  }
+  const videoId = target?.searchParams.get('v') ?? null;
+  const lang = target?.searchParams.get('lang') ?? null;
+  const kind = target?.searchParams.get('kind') ?? '';
+
+  return (candidate: string) => {
+    let u: URL;
+    try {
+      u = new URL(candidate, location.origin);
+    } catch {
+      return false;
+    }
+    if (!u.pathname.includes('/api/timedtext')) return false;
+    if (videoId && u.searchParams.get('v') !== videoId) return false;
+    if (lang && u.searchParams.get('lang') !== lang) return false;
+    if ((u.searchParams.get('kind') ?? '') !== kind) return false;
+    return true;
+  };
+}
+
+export async function fetchCaptionCues(
+  baseUrl: string,
+  videoId: string | null,
+  preferredLang: string,
+  signal?: AbortSignal,
+): Promise<CaptionCue[]> {
+  console.log(
+    '[LST] fetchCaptionCues start videoId=' +
+      (videoId ?? 'null') +
+      ' lang=' +
+      preferredLang,
+  );
+  const errors: string[] = [];
+
+  // === Strategy 1: InnerTube ANDROID client (bypasses pot for ASR) ===
+  if (videoId) {
+    try {
+      const { fetchCaptionsViaInnertube } = await import('./innertube.ts');
+      const cues = await fetchCaptionsViaInnertube(
+        videoId,
+        preferredLang,
+        signal,
+      );
+      console.log('[LST] innertube path OK cues=' + cues.length);
+      return cues;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`innertube: ${msg}`);
+      console.log('[LST] innertube failed, falling back:', msg);
+    }
+  }
+
+  // === Strategy 2: Intercept YouTube player's own signed fetch ===
+  try {
+    const { waitForInterceptedBody } = await import('./pageBridge.ts');
+    const match = buildTrackMatcher(baseUrl);
+    const body = await waitForInterceptedBody(match, 5000, signal);
+    console.log('[LST] intercept hit, body len=' + body.length);
+    const cues = parseCaptionBody(body);
+    if (cues.length > 0) {
+      console.log('[LST] intercept path OK cues=' + cues.length);
+      return cues;
+    }
+    errors.push('intercept: 0 cues parsed');
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    errors.push(`intercept: ${msg}`);
+    console.log('[LST] intercept failed, falling back:', msg);
+  }
+
+  // === Strategy 3: Direct fetch with fmt fallback chain (legacy) ===
+  const attempts: Array<string | null> = ['json3', 'srv3', 'srv1', null];
+
+  for (const fmt of attempts) {
+    try {
+      const body = await fetchTimedtextBody(baseUrl, fmt, signal);
+      const trimmed = body.trim();
+      if (!trimmed) {
+        errors.push(`direct fmt=${fmt ?? 'default'}: empty body`);
+        continue;
+      }
+      const cues = parseCaptionBody(trimmed);
+      if (cues.length > 0) {
+        console.log(
+          '[LST] direct path OK fmt=' +
+            (fmt ?? 'default') +
+            ' cues=' +
+            cues.length,
+        );
+        return cues;
+      }
+      errors.push(`direct fmt=${fmt ?? 'default'}: 0 cues`);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`direct fmt=${fmt ?? 'default'}: ${msg}`);
+    }
+  }
+
+  throw new Error(`all strategies failed — ${errors.join(' | ')}`);
+}
+
+export function findActiveCueIndex(
+  cues: CaptionCue[],
+  currentTime: number,
+  previousIndex: number,
+): number {
+  if (cues.length === 0) return -1;
+
+  if (previousIndex >= 0 && previousIndex < cues.length) {
+    const current = cues[previousIndex];
+    if (current && currentTime >= current.start && currentTime < current.end) {
+      return previousIndex;
+    }
+    const next = cues[previousIndex + 1];
+    if (next && currentTime >= next.start && currentTime < next.end) {
+      return previousIndex + 1;
+    }
+  }
+
+  let low = 0;
+  let high = cues.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const cue = cues[mid];
+    if (!cue) break;
+    if (currentTime < cue.start) {
+      high = mid - 1;
+    } else if (currentTime >= cue.end) {
+      low = mid + 1;
+    } else {
+      return mid;
+    }
+  }
+
+  return -1;
+}
