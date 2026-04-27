@@ -3,7 +3,7 @@ import {
   type CaptionTracksMessage,
 } from './captions.ts';
 
-const SOURCE = 'local-subtitle-translator';
+const SOURCE = 'Open_Translator';
 const MSG_BODY = '__LST_TIMEDTEXT_BODY__';
 const MSG_ERROR = '__LST_TIMEDTEXT_ERROR__';
 const REQUEST_TIMEDTEXT_EVENT = '__lst_request_timedtext__';

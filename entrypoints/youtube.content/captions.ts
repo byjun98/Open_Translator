@@ -12,7 +12,7 @@ export interface CaptionTrack {
 }
 
 export interface CaptionTracksMessage {
-  source: 'local-subtitle-translator';
+  source: 'Open_Translator';
   type: '__LST_CAPTION_TRACKS__';
   tracks: CaptionTrack[];
   videoId: string | null;
@@ -41,7 +41,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isCaptionTracksMessage(value: unknown): value is CaptionTracksMessage {
   if (!isRecord(value)) return false;
-  if (value.source !== 'local-subtitle-translator') return false;
+  if (value.source !== 'Open_Translator') return false;
   if (value.type !== '__LST_CAPTION_TRACKS__') return false;
   if (!Array.isArray(value.tracks)) return false;
   return true;

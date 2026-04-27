@@ -4,7 +4,7 @@ import { defineConfig } from 'wxt';
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
-    name: 'Local Subtitle Translator',
+    name: 'Open_Translator',
     description:
       'Translate YouTube subtitles through a local OpenAI-compatible proxy running on your machine.',
     permissions: ['storage'],

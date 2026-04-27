@@ -8,12 +8,12 @@ export default defineContentScript({
   cssInjectionMode: 'ui',
   async main(ctx) {
     const ui = await createShadowRootUi(ctx, {
-      name: 'local-subtitle-translator',
+      name: 'Open_Translator',
       position: 'inline',
       anchor: 'body',
       onMount(container) {
         const appContainer = document.createElement('div');
-        appContainer.id = 'local-subtitle-translator-root';
+        appContainer.id = 'Open_Translator-root';
         container.append(appContainer);
 
         const root = ReactDOM.createRoot(appContainer);

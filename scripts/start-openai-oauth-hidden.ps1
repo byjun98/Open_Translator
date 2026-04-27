@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$AppDir = Join-Path $env:LOCALAPPDATA 'LocalSubtitleTranslator'
+$AppDir = Join-Path $env:LOCALAPPDATA 'Open_Translator'
 $LogPath = Join-Path $AppDir 'openai-oauth.log'
 $PidPath = Join-Path $AppDir 'openai-oauth.pid'
 $PreferredPort = 10531

@@ -4,7 +4,7 @@ chcp 65001 >nul
 title 로컬 자막 번역 - 프록시 설정 도구
 
 REM === 전역 경로 ===
-set "LAUNCHER_DIR=%LOCALAPPDATA%\LocalSubtitleTranslator"
+set "LAUNCHER_DIR=%LOCALAPPDATA%\Open_Translator"
 set "LAUNCHER_VBS=%LAUNCHER_DIR%\openai-oauth-launcher.vbs"
 set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "STARTUP_VBS=%STARTUP_DIR%\OpenAI OAuth Proxy.vbs"

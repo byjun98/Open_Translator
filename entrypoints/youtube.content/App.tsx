@@ -41,9 +41,9 @@ type CaptionRect = {
   width: number;
 };
 
-const PLAYER_BUTTON_ID = 'local-subtitle-translator-player-button';
-const PLAYER_BUTTON_STYLE_ID = 'local-subtitle-translator-player-button-style';
-const NATIVE_CAPTION_STYLE_ID = 'local-subtitle-translator-native-style';
+const PLAYER_BUTTON_ID = 'Open_Translator-player-button';
+const PLAYER_BUTTON_STYLE_ID = 'Open_Translator-player-button-style';
+const NATIVE_CAPTION_STYLE_ID = 'Open_Translator-native-style';
 
 function isVideoPage() {
   return (
@@ -112,10 +112,10 @@ function ensureNativeCaptionReplacementStyles() {
   const style = document.createElement('style');
   style.id = NATIVE_CAPTION_STYLE_ID;
   style.textContent = `
-    .local-subtitle-translator-hide-native .caption-window,
-    .local-subtitle-translator-hide-native .captions-text,
-    .local-subtitle-translator-hide-native .caption-visual-line,
-    .local-subtitle-translator-hide-native .ytp-caption-segment {
+    .Open_Translator-hide-native .caption-window,
+    .Open_Translator-hide-native .captions-text,
+    .Open_Translator-hide-native .caption-visual-line,
+    .Open_Translator-hide-native .ytp-caption-segment {
       background: transparent !important;
       color: transparent !important;
       text-shadow: none !important;
@@ -357,10 +357,10 @@ function App() {
       Boolean(captionRect) &&
       Boolean(translatedText) &&
       !errorMessage;
-    container.classList.toggle('local-subtitle-translator-hide-native', shouldHideNative);
+    container.classList.toggle('Open_Translator-hide-native', shouldHideNative);
 
     return () => {
-      container.classList.remove('local-subtitle-translator-hide-native');
+      container.classList.remove('Open_Translator-hide-native');
     };
   }, [captionRect, errorMessage, settings.enabled, translatedText]);
 

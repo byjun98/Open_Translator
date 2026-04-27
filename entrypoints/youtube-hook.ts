@@ -40,7 +40,7 @@ export default defineUnlistedScript(() => {
   if (window.__lstHookInstalled) return;
   window.__lstHookInstalled = true;
 
-  const SOURCE = 'local-subtitle-translator';
+  const SOURCE = 'Open_Translator';
   const MSG_TRACKS = '__LST_CAPTION_TRACKS__';
   const MSG_BODY = '__LST_TIMEDTEXT_BODY__';
 

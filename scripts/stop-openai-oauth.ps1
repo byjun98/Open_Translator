@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$AppDir = Join-Path $env:LOCALAPPDATA 'LocalSubtitleTranslator'
+$AppDir = Join-Path $env:LOCALAPPDATA 'Open_Translator'
 $PidPath = Join-Path $AppDir 'openai-oauth.pid'
 
 function Get-OpenAIOAuthListeners {
