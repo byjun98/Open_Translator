@@ -23,11 +23,13 @@ function getCacheKey(
   targetLanguage: string,
   promptTemplate: string,
   text: string,
+  sourceLanguageHint?: string,
 ): string {
   return JSON.stringify([
     model,
     targetLanguage,
     promptTemplate,
+    sourceLanguageHint?.trim() || 'unknown',
     normalizeSourceText(text),
   ]);
 }
@@ -144,6 +146,7 @@ async function handleTranslateSubtitleMessage(
     settings.targetLanguage,
     settings.promptTemplate,
     sourceText,
+    message.payload.sourceLanguageHint,
   );
   const cachedTranslation = translationCache.get(cacheKey);
 

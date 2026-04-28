@@ -26,7 +26,7 @@ Return only the translated subtitle text.
   debounceMs: 220,
   showSourceCaption: true,
   overlayPosition: 'bottom',
-  maxCharactersPerRequest: 160,
+  maxCharactersPerRequest: 280,
 };
 
 const legacyInvalidModels = new Set([
@@ -35,6 +35,10 @@ const legacyInvalidModels = new Set([
   'gpt-4.1',
   'o4-mini',
 ]);
+
+const SETTINGS_SCHEMA_VERSION = 2;
+const SETTINGS_SCHEMA_VERSION_KEY = 'settingsSchemaVersion';
+const LEGACY_DEFAULT_MAX_CHARACTERS_PER_REQUEST = 160;
 
 const storageKeys = Object.keys(defaults) as (keyof ExtensionSettings)[];
 
@@ -131,11 +135,38 @@ function sanitizeSettings(
 
 export async function loadSettings(): Promise<ExtensionSettings> {
   const stored = await browser.storage.sync.get(
-    defaults as unknown as Partial<Record<string, unknown>>,
+    {
+      ...defaults,
+      [SETTINGS_SCHEMA_VERSION_KEY]: 0,
+    } as unknown as Partial<Record<string, unknown>>,
   );
-  return sanitizeSettings(
-    stored as Partial<Record<keyof ExtensionSettings, unknown>>,
-  );
+  const storedRecord = stored as Partial<
+    Record<keyof ExtensionSettings | typeof SETTINGS_SCHEMA_VERSION_KEY, unknown>
+  >;
+  const needsMigration =
+    storedRecord[SETTINGS_SCHEMA_VERSION_KEY] !== SETTINGS_SCHEMA_VERSION;
+  const nextRecord: Partial<Record<keyof ExtensionSettings, unknown>> = {
+    ...storedRecord,
+  };
+
+  if (
+    needsMigration &&
+    storedRecord.maxCharactersPerRequest ===
+      LEGACY_DEFAULT_MAX_CHARACTERS_PER_REQUEST
+  ) {
+    nextRecord.maxCharactersPerRequest = defaults.maxCharactersPerRequest;
+  }
+
+  const settings = sanitizeSettings(nextRecord);
+
+  if (needsMigration) {
+    await browser.storage.sync.set({
+      ...settings,
+      [SETTINGS_SCHEMA_VERSION_KEY]: SETTINGS_SCHEMA_VERSION,
+    });
+  }
+
+  return settings;
 }
 
 export async function saveSettings(
@@ -143,12 +174,21 @@ export async function saveSettings(
 ): Promise<ExtensionSettings> {
   const current = await loadSettings();
   const merged = sanitizeSettings({ ...current, ...nextSettings });
-  await browser.storage.sync.set(merged);
+  await browser.storage.sync.set({
+    ...merged,
+    [SETTINGS_SCHEMA_VERSION_KEY]: SETTINGS_SCHEMA_VERSION,
+  });
   return merged;
 }
 
 export async function resetSettings(): Promise<ExtensionSettings> {
-  await browser.storage.sync.remove(storageKeys);
-  await browser.storage.sync.set(defaults);
+  await browser.storage.sync.remove([
+    ...storageKeys,
+    SETTINGS_SCHEMA_VERSION_KEY,
+  ]);
+  await browser.storage.sync.set({
+    ...defaults,
+    [SETTINGS_SCHEMA_VERSION_KEY]: SETTINGS_SCHEMA_VERSION,
+  });
   return { ...defaults };
 }
