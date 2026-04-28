@@ -60,22 +60,38 @@ function ensurePlayerButtonStyles() {
   const style = document.createElement('style');
   style.id = PLAYER_BUTTON_STYLE_ID;
   style.textContent = `
-    .${PLAYER_BUTTON_ID} {
+    .${PLAYER_BUTTON_ID}.ytp-button {
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      flex: 0 0 auto !important;
       width: auto !important;
-      min-width: 36px;
-      padding: 0 6px !important;
+      min-width: 50px !important;
+      height: 100% !important;
+      margin: 0 !important;
+      padding: 0 5px !important;
+      border: 0 !important;
+      appearance: none !important;
+      -webkit-appearance: none !important;
+      background: transparent !important;
+      box-sizing: border-box !important;
+      line-height: normal !important;
+      vertical-align: top !important;
+      transform: none !important;
     }
 
     .${PLAYER_BUTTON_ID}__pill {
-      display: inline-flex;
+      display: flex;
       align-items: center;
       justify-content: center;
-      min-width: 36px;
+      min-width: 42px;
       height: 28px;
       padding: 0 9px;
       border-radius: 10px;
+      box-sizing: border-box;
       font-family: Arial, sans-serif;
       font-size: 15px;
+      line-height: 1;
       font-weight: 800;
       letter-spacing: -0.02em;
       color: #ffffff;

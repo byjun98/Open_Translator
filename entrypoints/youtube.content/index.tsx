@@ -8,7 +8,7 @@ export default defineContentScript({
   cssInjectionMode: 'ui',
   async main(ctx) {
     const ui = await createShadowRootUi(ctx, {
-      name: 'Open_Translator',
+      name: 'open-translator-root',
       position: 'inline',
       anchor: 'body',
       onMount(container) {
