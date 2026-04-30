@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import {
   BACKGROUND_MESSAGE_TYPES,
+  type OpenSubtitlePreviewResponse,
+  type TranslateSubtitleCuesResponse,
   type TranslateSubtitleResponse,
 } from '../../lib/messages.ts';
 import {
@@ -10,6 +12,11 @@ import {
   saveSettings,
   type ExtensionSettings,
 } from '../../lib/settings.ts';
+import {
+  SUBTITLE_EXPORT_STORAGE_PREFIX,
+  type SubtitleExportMode,
+  type SubtitleExportPayload,
+} from '../../lib/subtitle-export.ts';
 import {
   fetchCaptionCues,
   findActiveCueIndex,
@@ -23,6 +30,8 @@ import {
 
 const CUE_PREFETCH_COUNT = 10;
 const CUE_INITIAL_PREFETCH = 8;
+const CONTEXT_TRANSLATION_CHUNK_SIZE = 40;
+const CONTEXT_TRANSLATION_CONCURRENCY = 1;
 const PREFETCH_CONCURRENCY = 3;
 const CAPTION_RECT_POLL_MS = 250;
 
@@ -40,6 +49,11 @@ type CaptionRect = {
   bottom: number;
   width: number;
   isNative: boolean;
+};
+
+type PlayerMenuAnchor = {
+  bottom: number;
+  right: number;
 };
 
 const PLAYER_BUTTON_ID = 'Open_Translator-player-button';
@@ -86,6 +100,36 @@ function getErrorMessage(error: unknown) {
 
 function isExtensionContextInvalidatedError(error: unknown) {
   return /extension context invalidated/i.test(getErrorMessage(error));
+}
+
+function getVideoTitle() {
+  const titleNode =
+    document.querySelector('h1.ytd-watch-metadata') ??
+    document.querySelector('h1.title') ??
+    document.querySelector('meta[name="title"]');
+
+  const title =
+    titleNode instanceof HTMLMetaElement
+      ? titleNode.content
+      : titleNode?.textContent;
+
+  return (title || document.title.replace(/\s*-\s*YouTube\s*$/, '')).trim();
+}
+
+function getPlayerMenuAnchor(rect: DOMRect): PlayerMenuAnchor {
+  const menuWidth = Math.min(352, window.innerWidth - 24);
+  const right = clamp(
+    window.innerWidth - rect.right,
+    12,
+    Math.max(12, window.innerWidth - menuWidth - 12),
+  );
+  const bottom = clamp(
+    window.innerHeight - rect.top + 8,
+    12,
+    Math.max(12, window.innerHeight - 12),
+  );
+
+  return { bottom, right };
 }
 
 function removePlayerButton() {
@@ -338,8 +382,19 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('');
   const [captionRect, setCaptionRect] = useState<CaptionRect | null>(null);
   const [routeKey, setRouteKey] = useState(getVideoRouteKey);
+  const [isPlayerMenuOpen, setIsPlayerMenuOpen] = useState(false);
+  const [playerMenuAnchor, setPlayerMenuAnchor] =
+    useState<PlayerMenuAnchor | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportStatus, setExportStatus] = useState('');
 
   const lastKnownCaptionRectRef = useRef<CaptionRect | null>(null);
+  const cuesRef = useRef<CaptionCue[]>([]);
+  const currentVideoIdRef = useRef<string | null>(null);
+  const sourceLanguageHintRef = useRef('en');
+  const translationByTextRef = useRef(new Map<string, string>());
+  const contextTranslationByIndexRef = useRef(new Map<number, string>());
+  const inFlightTranslationTextsRef = useRef(new Set<string>());
 
   const statusLabel =
     status === 'translating'
@@ -351,6 +406,172 @@ function App() {
           : status === 'ready'
             ? settings.targetLanguage
             : '대기 중';
+
+  const openPlayerMenu = () => {
+    const button = document.getElementById(PLAYER_BUTTON_ID);
+    const rect = button?.getBoundingClientRect();
+
+    if (rect) {
+      setPlayerMenuAnchor(getPlayerMenuAnchor(rect));
+    } else {
+      setPlayerMenuAnchor(null);
+    }
+
+    setExportStatus('');
+    setIsPlayerMenuOpen((open) => !open);
+  };
+
+  const setTranslationEnabled = async (enabled: boolean) => {
+    const next = await saveSettings({ enabled });
+    setSettings(next);
+    if (next.enabled) {
+      setErrorMessage('');
+      setStatus('observing');
+      return;
+    }
+
+    setTranslatedText('');
+    setSourceText('');
+    setStatus('idle');
+  };
+
+  const translateForExport = async (text: string) => {
+    const cached = translationByTextRef.current.get(text);
+    if (cached && cached.trim()) {
+      return cached;
+    }
+
+    const response = (await browser.runtime.sendMessage({
+      type: BACKGROUND_MESSAGE_TYPES.translateSubtitle,
+      payload: {
+        force: true,
+        text,
+        pageUrl: location.href,
+        sourceLanguageHint: sourceLanguageHintRef.current,
+      },
+    })) as TranslateSubtitleResponse;
+
+    if (!response.ok) {
+      throw new Error(response.error.message);
+    }
+
+    if (response.data.translation.trim()) {
+      translationByTextRef.current.set(text, response.data.translation);
+    }
+    return response.data.translation;
+  };
+
+  const openSubtitleExportPreview = async (mode: SubtitleExportMode) => {
+    const cues = cuesRef.current
+      .map((cue, index) => ({
+        ...cue,
+        index,
+        text: cue.text.trim(),
+      }))
+      .filter((cue) => cue.text.length > 0 && cue.end > cue.start);
+
+    if (cues.length === 0) {
+      setExportStatus('아직 내보낼 자막을 읽지 못했어요. 자막이 뜬 뒤 다시 눌러주세요.');
+      return;
+    }
+
+    setIsExporting(true);
+    setExportStatus(`번역 준비 중 0/${cues.length}`);
+
+    try {
+      const uniqueTexts = Array.from(new Set(cues.map((cue) => cue.text)));
+      const contextualTranslationsByCueIndex = new Map<number, string>();
+      for (const cue of cues) {
+        const contextualTranslation = contextTranslationByIndexRef.current.get(
+          cue.index,
+        );
+        if (contextualTranslation && contextualTranslation.trim()) {
+          contextualTranslationsByCueIndex.set(cue.index, contextualTranslation);
+        }
+      }
+      const translations = new Map<string, string>();
+      for (const text of uniqueTexts) {
+        const cached = translationByTextRef.current.get(text);
+        if (cached && cached.trim()) {
+          translations.set(text, cached);
+        }
+      }
+      const textsNeedingFallbackTranslation = new Set(
+        cues
+          .filter((cue) => !contextualTranslationsByCueIndex.has(cue.index))
+          .map((cue) => cue.text),
+      );
+      const pendingTexts = uniqueTexts.filter(
+        (text) =>
+          textsNeedingFallbackTranslation.has(text) && !translations.has(text),
+      );
+      let nextIndex = 0;
+      let completed = translations.size;
+
+      if (pendingTexts.length === 0) {
+        setExportStatus(`저장된 번역 사용 중 ${completed}/${uniqueTexts.length}`);
+      }
+
+      const worker = async () => {
+        while (nextIndex < pendingTexts.length) {
+          const text = pendingTexts[nextIndex];
+          nextIndex += 1;
+          if (!text) continue;
+
+          translations.set(text, await translateForExport(text));
+          completed += 1;
+          setExportStatus(`번역 준비 중 ${completed}/${uniqueTexts.length}`);
+        }
+      };
+
+      const workerCount = Math.min(PREFETCH_CONCURRENCY, pendingTexts.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const payload: SubtitleExportPayload = {
+        id,
+        createdAt: new Date().toISOString(),
+        pageUrl: location.href,
+        title: getVideoTitle(),
+        videoId: currentVideoIdRef.current ?? getVideoIdFromRouteKey(routeKey),
+        targetLanguage: settings.targetLanguage,
+        sourceLanguageHint: sourceLanguageHintRef.current,
+        cues: cues.map((cue) => ({
+          start: cue.start,
+          end: cue.end,
+          source: cue.text,
+          translation:
+            contextualTranslationsByCueIndex.get(cue.index) ??
+            translations.get(cue.text) ??
+            cue.text,
+        })),
+        recommendedMode: mode,
+      };
+
+      await browser.storage.local.set({
+        [`${SUBTITLE_EXPORT_STORAGE_PREFIX}${id}`]: payload,
+      });
+
+      const openResponse = (await browser.runtime.sendMessage({
+        type: BACKGROUND_MESSAGE_TYPES.openSubtitlePreview,
+        payload: {
+          id,
+          mode,
+        },
+      })) as OpenSubtitlePreviewResponse;
+
+      if (!openResponse.ok) {
+        throw new Error(openResponse.error.message);
+      }
+
+      setExportStatus('확인 페이지를 열었어요.');
+      setIsPlayerMenuOpen(false);
+    } catch (error) {
+      setExportStatus(`내보내기 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -451,19 +672,7 @@ function App() {
         settings.enabled,
         Boolean(errorMessage),
         errorMessage || '로컬 자막 번역 오류',
-        () => {
-          void saveSettings({ enabled: !settings.enabled }).then((next) => {
-            setSettings(next);
-            if (next.enabled) {
-              setErrorMessage('');
-              setStatus('observing');
-            } else {
-              setTranslatedText('');
-              setSourceText('');
-              setStatus('idle');
-            }
-          });
-        },
+        openPlayerMenu,
         () => {
           void browser.runtime.openOptionsPage();
         },
@@ -519,7 +728,7 @@ function App() {
   }, [captionRect, errorMessage, settings.enabled, translatedText]);
 
   useEffect(() => {
-    if (!settings.enabled || !routeKey) {
+    if (!routeKey) {
       setSourceText('');
       setTranslatedText('');
       setErrorMessage('');
@@ -532,7 +741,7 @@ function App() {
     setSourceText('');
     setTranslatedText('');
     setErrorMessage('');
-    setStatus('observing');
+    setStatus(settings.enabled ? 'observing' : 'idle');
 
     let active = true;
     let cues: CaptionCue[] = [];
@@ -547,10 +756,21 @@ function App() {
     let cueGeneration = 0;
     let contextInvalidated = false;
     const expectedVideoId = getVideoIdFromRouteKey(routeKey);
-    const translationByText = new Map<string, string>();
+    const translationByText = translationByTextRef.current;
+    const contextTranslationByIndex = contextTranslationByIndexRef.current;
     const prefetchEnqueued = new Set<string>();
     const prefetchQueue: string[] = [];
+    const contextChunksQueued = new Set<number>();
+    const contextChunksInFlight = new Set<number>();
+    const contextChunkQueue: number[] = [];
     let prefetchInFlight = 0;
+    let contextChunksInFlightCount = 0;
+
+    translationByText.clear();
+    contextTranslationByIndex.clear();
+    cuesRef.current = [];
+    currentVideoIdRef.current = expectedVideoId;
+    sourceLanguageHintRef.current = 'en';
 
     const findVideoElement = () =>
       document.querySelector('video.html5-main-video') as HTMLVideoElement | null;
@@ -577,10 +797,17 @@ function App() {
       cueGeneration += 1;
       clearPendingCue();
       cues = [];
+      cuesRef.current = [];
       activeCueIndex = -1;
       prefetchQueue.length = 0;
       prefetchEnqueued.clear();
+      inFlightTranslationTextsRef.current.clear();
       translationByText.clear();
+      contextTranslationByIndex.clear();
+      contextChunksQueued.clear();
+      contextChunksInFlight.clear();
+      contextChunkQueue.length = 0;
+      contextChunksInFlightCount = 0;
       setSourceText('');
       setTranslatedText('');
     };
@@ -605,6 +832,141 @@ function App() {
       );
     };
 
+    const getCueTranslation = (index: number, cue: CaptionCue) => {
+      const contextTranslation = contextTranslationByIndex.get(index);
+      if (contextTranslation && contextTranslation.trim()) {
+        return contextTranslation;
+      }
+
+      const cached = translationByText.get(cue.text);
+      return cached && cached.trim() ? cached : '';
+    };
+
+    const translateContextChunk = async (
+      chunkStart: number,
+      generation = cueGeneration,
+    ) => {
+      if (!settings.enabled || contextInvalidated) return;
+      if (generation !== cueGeneration) return;
+
+      const chunk = cues
+        .slice(chunkStart, chunkStart + CONTEXT_TRANSLATION_CHUNK_SIZE)
+        .map((cue, offset) => ({
+          index: chunkStart + offset,
+          start: cue.start,
+          end: cue.end,
+          source: cue.text,
+        }))
+        .filter((cue) => cue.source.trim().length > 0);
+
+      if (chunk.length === 0) return;
+
+      try {
+        const response = (await browser.runtime.sendMessage({
+          type: BACKGROUND_MESSAGE_TYPES.translateSubtitleCues,
+          payload: {
+            cues: chunk,
+            pageUrl: location.href,
+            sourceLanguageHint: currentSourceLanguageHint,
+            targetLanguage: settings.targetLanguage,
+            title: getVideoTitle(),
+          },
+        })) as TranslateSubtitleCuesResponse;
+
+        if (!active || generation !== cueGeneration) return;
+
+        if (!response.ok) {
+          console.warn('[LST] contextual subtitle translation failed', response.error);
+          return;
+        }
+
+        for (const translatedCue of response.data.cues) {
+          if (!translatedCue.translation.trim()) continue;
+          contextTranslationByIndex.set(
+            translatedCue.index,
+            translatedCue.translation,
+          );
+        }
+
+        const currentCue = cues[activeCueIndex];
+        if (currentCue) {
+          const currentTranslation = getCueTranslation(activeCueIndex, currentCue);
+          if (currentTranslation) {
+            setTranslatedText(currentTranslation);
+            setStatus('ready');
+            setErrorMessage('');
+          }
+        }
+      } catch (error) {
+        if (isExtensionContextInvalidatedError(error)) {
+          stopAfterExtensionContextInvalidated();
+          return;
+        }
+        console.warn('[LST] contextual subtitle translation error', error);
+      }
+    };
+
+    const drainContextTranslationQueue = () => {
+      while (
+        active &&
+        settings.enabled &&
+        !contextInvalidated &&
+        contextChunksInFlightCount < CONTEXT_TRANSLATION_CONCURRENCY &&
+        contextChunkQueue.length > 0
+      ) {
+        const chunkStart = contextChunkQueue.shift();
+        if (typeof chunkStart !== 'number') break;
+        if (contextChunksInFlight.has(chunkStart)) continue;
+
+        contextChunksInFlight.add(chunkStart);
+        contextChunksInFlightCount += 1;
+        void translateContextChunk(chunkStart).finally(() => {
+          contextChunksInFlight.delete(chunkStart);
+          contextChunksInFlightCount = Math.max(0, contextChunksInFlightCount - 1);
+          drainContextTranslationQueue();
+        });
+      }
+    };
+
+    const enqueueContextChunk = (chunkStart: number, priority = false) => {
+      if (!settings.enabled || cues.length === 0) return;
+      const normalizedStart =
+        Math.floor(chunkStart / CONTEXT_TRANSLATION_CHUNK_SIZE) *
+        CONTEXT_TRANSLATION_CHUNK_SIZE;
+
+      if (normalizedStart < 0 || normalizedStart >= cues.length) return;
+
+      if (contextChunksQueued.has(normalizedStart)) {
+        if (priority && !contextChunksInFlight.has(normalizedStart)) {
+          const queuedIndex = contextChunkQueue.indexOf(normalizedStart);
+          if (queuedIndex > 0) {
+            contextChunkQueue.splice(queuedIndex, 1);
+            contextChunkQueue.unshift(normalizedStart);
+          }
+        }
+        drainContextTranslationQueue();
+        return;
+      }
+
+      contextChunksQueued.add(normalizedStart);
+      if (priority) {
+        contextChunkQueue.unshift(normalizedStart);
+      } else {
+        contextChunkQueue.push(normalizedStart);
+      }
+      drainContextTranslationQueue();
+    };
+
+    const enqueueAllContextChunks = () => {
+      for (
+        let chunkStart = 0;
+        chunkStart < cues.length;
+        chunkStart += CONTEXT_TRANSLATION_CHUNK_SIZE
+      ) {
+        enqueueContextChunk(chunkStart);
+      }
+    };
+
     const drainPrefetchQueue = () => {
       while (
         active &&
@@ -614,7 +976,12 @@ function App() {
       ) {
         const text = prefetchQueue.shift();
         if (!text) break;
-        if (translationByText.has(text)) {
+        const cached = translationByText.get(text);
+        if (cached && cached.trim()) {
+          prefetchEnqueued.delete(text);
+          continue;
+        }
+        if (inFlightTranslationTextsRef.current.has(text)) {
           prefetchEnqueued.delete(text);
           continue;
         }
@@ -630,7 +997,9 @@ function App() {
     const enqueuePrefetch = (text: string) => {
       if (contextInvalidated) return;
       if (!text) return;
-      if (translationByText.has(text)) return;
+      const cached = translationByText.get(text);
+      if (cached && cached.trim()) return;
+      if (inFlightTranslationTextsRef.current.has(text)) return;
       if (prefetchEnqueued.has(text)) return;
       prefetchEnqueued.add(text);
       prefetchQueue.push(text);
@@ -640,8 +1009,10 @@ function App() {
     const translateText = async (text: string, generation = cueGeneration) => {
       if (contextInvalidated) return;
       if (generation !== cueGeneration) return;
-      if (translationByText.has(text)) return;
-      translationByText.set(text, '');
+      const cached = translationByText.get(text);
+      if (cached && cached.trim()) return;
+      if (inFlightTranslationTextsRef.current.has(text)) return;
+      inFlightTranslationTextsRef.current.add(text);
 
       try {
         const response = (await browser.runtime.sendMessage({
@@ -656,7 +1027,9 @@ function App() {
         if (!active || generation !== cueGeneration) return;
 
         if (response.ok) {
-          translationByText.set(text, response.data.translation);
+          if (response.data.translation.trim()) {
+            translationByText.set(text, response.data.translation);
+          }
           const currentCue = cues[activeCueIndex];
           if (currentCue && currentCue.text === text) {
             setTranslatedText(response.data.translation);
@@ -688,6 +1061,8 @@ function App() {
               : '로컬 프록시에 연결할 수 없습니다.',
           );
         }
+      } finally {
+        inFlightTranslationTextsRef.current.delete(text);
       }
     };
 
@@ -708,9 +1083,12 @@ function App() {
       setSourceText(cue.text);
       setErrorMessage('');
 
-      const cached = translationByText.get(cue.text);
-      if (cached) {
-        setTranslatedText(cached);
+      enqueueContextChunk(nextIndex, true);
+      enqueueContextChunk(nextIndex + CONTEXT_TRANSLATION_CHUNK_SIZE);
+
+      const readyTranslation = getCueTranslation(nextIndex, cue);
+      if (readyTranslation) {
+        setTranslatedText(readyTranslation);
         setStatus('ready');
       } else {
         setTranslatedText('');
@@ -763,7 +1141,7 @@ function App() {
     const renderLoop = () => {
       if (!active) return;
       const video = findVideoElement();
-      if (video && cues.length > 0) {
+      if (settings.enabled && video && cues.length > 0) {
         const nextIndex = findActiveCueIndex(
           cues,
           video.currentTime,
@@ -816,11 +1194,14 @@ function App() {
       if (effectiveVideoId !== currentVideoId) {
         resetCueState();
         currentVideoId = effectiveVideoId;
+        currentVideoIdRef.current = effectiveVideoId;
       }
 
       if (isLive || scopedTracks.length === 0) {
         resetCueState();
-        setStatus(scopedTracks.length === 0 ? 'idle' : 'observing');
+        setStatus(
+          scopedTracks.length === 0 || !settings.enabled ? 'idle' : 'observing',
+        );
         return;
       }
 
@@ -832,11 +1213,12 @@ function App() {
       }
 
       currentSourceLanguageHint = track.languageCode || 'en';
+      sourceLanguageHintRef.current = currentSourceLanguageHint;
       const isAutoGeneratedTrack = track.kind === 'asr';
       const localAbort = new AbortController();
       fetchAbort = localAbort;
       const loadGeneration = cueGeneration;
-      setStatus('observing');
+      setStatus(settings.enabled ? 'observing' : 'idle');
 
       try {
         const nextCues = await fetchCaptionCues(
@@ -857,20 +1239,25 @@ function App() {
           return;
         }
         cues = nextCues;
+        cuesRef.current = nextCues;
         activeCueIndex = -1;
         setErrorMessage('');
 
         // Warm the cache with the first few cues so the viewer doesn't hit
         // translation latency at video start.
-        const initialCount = Math.min(CUE_INITIAL_PREFETCH, cues.length);
-        for (let i = 0; i < initialCount; i += 1) {
-          const cue = cues[i];
-          if (cue) enqueuePrefetch(cue.text);
+        if (settings.enabled) {
+          enqueueAllContextChunks();
+          const initialCount = Math.min(CUE_INITIAL_PREFETCH, cues.length);
+          for (let i = 0; i < initialCount; i += 1) {
+            const cue = cues[i];
+            if (cue) enqueuePrefetch(cue.text);
+          }
         }
       } catch (error) {
         if (!active || localAbort.signal.aborted) return;
         if (error instanceof DOMException && error.name === 'AbortError') return;
         cues = [];
+        cuesRef.current = [];
         activeCueIndex = -1;
         setStatus('error');
         setErrorMessage(
@@ -941,15 +1328,12 @@ function App() {
     settings.targetLanguage,
   ]);
 
-  if (!settings.enabled || !routeKey) {
+  if (!routeKey) {
     return null;
   }
 
-  const shouldRenderOverlay = Boolean(errorMessage || translatedText);
-
-  if (!shouldRenderOverlay) {
-    return null;
-  }
+  const shouldRenderOverlay =
+    settings.enabled && Boolean(errorMessage || translatedText);
 
   const overlayStyle = captionRect
     ? {
@@ -959,9 +1343,67 @@ function App() {
         transform: 'none',
       }
     : undefined;
+  const playerMenuStyle = playerMenuAnchor
+    ? {
+        bottom: `${playerMenuAnchor.bottom}px`,
+        right: `${playerMenuAnchor.right}px`,
+      }
+    : undefined;
 
   return (
-    <div
+    <>
+      {isPlayerMenuOpen ? (
+        <div className="player-menu" style={playerMenuStyle}>
+          <div className="player-menu-head">
+            <strong>AI 자막</strong>
+            <button
+              aria-label="메뉴 닫기"
+              className="player-menu-close"
+              onClick={() => setIsPlayerMenuOpen(false)}
+              type="button">
+              닫기
+            </button>
+          </div>
+
+          <label className="player-menu-toggle">
+            <input
+              checked={settings.enabled}
+              disabled={isExporting}
+              onChange={(event) => {
+                void setTranslationEnabled(event.currentTarget.checked);
+              }}
+              type="checkbox"
+            />
+            <span>번역 표시</span>
+          </label>
+
+          <div className="player-menu-actions">
+            <button
+              disabled={isExporting}
+              onClick={() => void openSubtitleExportPreview('translated')}
+              type="button">
+              자막 다운로드 (번역)
+            </button>
+            <button
+              disabled={isExporting}
+              onClick={() => void openSubtitleExportPreview('bilingual')}
+              type="button">
+              자막 다운로드 (원문+번역)
+            </button>
+          </div>
+
+          {exportStatus ? (
+            <p className="player-menu-status">{exportStatus}</p>
+          ) : (
+            <p className="player-menu-status">
+              다운로드 전에 확인 페이지에서 SRT 내용을 볼 수 있어요.
+            </p>
+          )}
+        </div>
+      ) : null}
+
+      {shouldRenderOverlay ? (
+        <div
       className={`overlay-shell ${captionRect ? 'overlay-shell--native' : `overlay-shell--${settings.overlayPosition}`}`}
       style={overlayStyle}>
       <section className="translation-card" aria-live="polite">
@@ -984,8 +1426,10 @@ function App() {
             <p className="subtitle-line subtitle-line--source">{sourceText}</p>
           ) : null}
         </div>
-      </section>
-    </div>
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }
 

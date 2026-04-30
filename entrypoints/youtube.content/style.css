@@ -32,6 +32,91 @@
   top: clamp(1rem, 4vh, 2rem);
 }
 
+.player-menu {
+  position: fixed;
+  bottom: 4rem;
+  right: 1rem;
+  width: min(22rem, calc(100vw - 2rem));
+  max-height: min(24rem, calc(100vh - 5.5rem));
+  overflow: auto;
+  padding: 0.72rem;
+  border-radius: 0.72rem;
+  color: #f7f2e8;
+  background: rgba(16, 18, 24, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(18px);
+  pointer-events: auto;
+}
+
+.player-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.95rem;
+}
+
+.player-menu-close {
+  border: 0;
+  border-radius: 0.45rem;
+  padding: 0.26rem 0.5rem;
+  color: rgba(247, 242, 232, 0.82);
+  background: rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+}
+
+.player-menu-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.1rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.92rem;
+}
+
+.player-menu-toggle input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: #f0b35a;
+}
+
+.player-menu-actions {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.player-menu-actions button {
+  min-height: 2.25rem;
+  border: 1px solid rgba(255, 210, 134, 0.22);
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.62rem;
+  color: #fff8ea;
+  background: rgba(255, 255, 255, 0.1);
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+
+.player-menu-actions button:hover:not(:disabled),
+.player-menu-close:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.player-menu-actions button:disabled,
+.player-menu-toggle input:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.player-menu-status {
+  margin: 0.62rem 0 0;
+  color: rgba(239, 243, 248, 0.78);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .translation-card {
   width: 100%;
   display: flex;

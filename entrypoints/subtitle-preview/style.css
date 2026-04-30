@@ -1,0 +1,352 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  background: #0f1117;
+  color: #f7f2e8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.preview-shell {
+  width: min(1440px, calc(100vw - 32px));
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px 0;
+}
+
+.preview-shell--center {
+  display: grid;
+  place-items: center;
+}
+
+.preview-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 14px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #f0b35a;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(1.35rem, 3vw, 2.35rem);
+  line-height: 1.16;
+}
+
+.muted,
+.control-note {
+  margin: 10px 0 0;
+  color: rgba(239, 243, 248, 0.72);
+}
+
+.panel {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.24);
+}
+
+.panel--controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.download-button,
+.secondary-button {
+  min-height: 42px;
+  border-radius: 7px;
+  padding: 0 18px;
+  font-weight: 900;
+}
+
+.download-button {
+  border: 0;
+  color: #17130d;
+  background: #f0b35a;
+}
+
+.secondary-button {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(247, 242, 232, 0.9);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.secondary-button--accent {
+  border-color: rgba(240, 179, 90, 0.34);
+  color: #fff8ea;
+  background: rgba(240, 179, 90, 0.13);
+}
+
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  padding: 0 12px;
+  color: rgba(247, 242, 232, 0.84);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.mode-option--active {
+  color: #fff8ea;
+  border-color: rgba(240, 179, 90, 0.46);
+  background: rgba(240, 179, 90, 0.16);
+}
+
+.mode-option input {
+  accent-color: #f0b35a;
+}
+
+.timeline-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.timeline-head,
+.cue-row {
+  display: grid;
+  grid-template-columns: 56px 172px minmax(260px, 1fr) minmax(260px, 1fr) 96px;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.timeline-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 12px;
+  color: rgba(247, 242, 232, 0.62);
+  background: rgba(11, 13, 19, 0.96);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.timeline-list {
+  max-height: 68vh;
+  overflow: auto;
+}
+
+.cue-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.cue-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.cue-row--edited {
+  box-shadow: inset 3px 0 0 #f0b35a;
+}
+
+.cue-index {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(247, 242, 232, 0.7);
+  font-weight: 900;
+}
+
+.cue-time {
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  color: rgba(239, 243, 248, 0.78);
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace,
+    monospace;
+  font-size: 0.82rem;
+}
+
+.cue-time span:first-child::after {
+  content: " ->";
+  color: rgba(239, 243, 248, 0.38);
+}
+
+.cue-field {
+  display: grid;
+  gap: 6px;
+}
+
+.cue-field span {
+  display: none;
+}
+
+.cue-field textarea,
+.srt-preview {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  color: #f7f2e8;
+  background: rgba(3, 4, 7, 0.56);
+  line-height: 1.5;
+}
+
+.cue-field textarea {
+  min-height: 78px;
+  padding: 10px 11px;
+  font-size: 0.92rem;
+}
+
+.cue-field--translation textarea {
+  border-color: rgba(240, 179, 90, 0.22);
+  background: rgba(15, 12, 8, 0.5);
+}
+
+.row-reset {
+  align-self: center;
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  color: rgba(247, 242, 232, 0.84);
+  background: rgba(255, 255, 255, 0.07);
+  font-weight: 800;
+}
+
+.raw-panel {
+  margin-top: 12px;
+}
+
+.raw-panel summary {
+  color: rgba(247, 242, 232, 0.84);
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.srt-preview {
+  display: block;
+  min-height: 42vh;
+  margin-top: 12px;
+  padding: 16px;
+  background: rgba(3, 4, 7, 0.72);
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace,
+    monospace;
+  font-size: 0.92rem;
+}
+
+@media (max-width: 980px) {
+  .preview-header,
+  .panel--controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .download-button,
+  .secondary-button {
+    flex: 1;
+  }
+
+  .timeline-head {
+    display: none;
+  }
+
+  .timeline-list {
+    max-height: none;
+  }
+
+  .cue-row {
+    grid-template-columns: 52px 1fr;
+    gap: 10px;
+  }
+
+  .cue-time,
+  .cue-field,
+  .row-reset {
+    grid-column: 2;
+  }
+
+  .cue-index {
+    grid-row: 1 / 5;
+    align-items: flex-start;
+    padding-top: 8px;
+  }
+
+  .cue-field span {
+    display: block;
+    color: rgba(247, 242, 232, 0.58);
+    font-size: 0.76rem;
+    font-weight: 900;
+  }
+
+  .row-reset {
+    justify-self: start;
+    padding: 0 12px;
+  }
+}
+
+@media (max-width: 560px) {
+  .preview-shell {
+    width: min(100vw - 18px, 1440px);
+    padding: 18px 0;
+  }
+
+  .header-actions {
+    flex-direction: column;
+  }
+
+  .download-button,
+  .secondary-button {
+    width: 100%;
+  }
+}

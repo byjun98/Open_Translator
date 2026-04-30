@@ -5,6 +5,9 @@ export const TRANSLATION_CACHE_LIMIT = 120;
 
 export const BACKGROUND_MESSAGE_TYPES = {
   getSettings: 'settings:get',
+  openSubtitlePreview: 'subtitle-preview:open',
+  polishSubtitleCues: 'subtitle:polish-cues',
+  translateSubtitleCues: 'subtitle:translate-cues',
   translateSubtitle: 'subtitle:translate',
 } as const;
 
@@ -33,10 +36,61 @@ export interface TranslateSubtitleMessage {
     text: string;
     pageUrl?: string;
     sourceLanguageHint?: string;
+    force?: boolean;
   };
 }
 
-export type BackgroundRequest = GetSettingsMessage | TranslateSubtitleMessage;
+export interface OpenSubtitlePreviewMessage {
+  type: typeof BACKGROUND_MESSAGE_TYPES.openSubtitlePreview;
+  payload: {
+    id: string;
+    mode: 'translated' | 'bilingual';
+  };
+}
+
+export interface PolishSubtitleCuePayload {
+  index: number;
+  start: number;
+  end: number;
+  source: string;
+  translation: string;
+}
+
+export interface PolishSubtitleCuesMessage {
+  type: typeof BACKGROUND_MESSAGE_TYPES.polishSubtitleCues;
+  payload: {
+    cues: PolishSubtitleCuePayload[];
+    pageUrl?: string;
+    sourceLanguageHint?: string;
+    targetLanguage?: string;
+    title?: string;
+  };
+}
+
+export interface TranslateSubtitleCuePayload {
+  index: number;
+  start: number;
+  end: number;
+  source: string;
+}
+
+export interface TranslateSubtitleCuesMessage {
+  type: typeof BACKGROUND_MESSAGE_TYPES.translateSubtitleCues;
+  payload: {
+    cues: TranslateSubtitleCuePayload[];
+    pageUrl?: string;
+    sourceLanguageHint?: string;
+    targetLanguage?: string;
+    title?: string;
+  };
+}
+
+export type BackgroundRequest =
+  | GetSettingsMessage
+  | OpenSubtitlePreviewMessage
+  | PolishSubtitleCuesMessage
+  | TranslateSubtitleCuesMessage
+  | TranslateSubtitleMessage;
 
 export interface BackgroundErrorDetails {
   code: BackgroundErrorCode;
@@ -83,8 +137,42 @@ export type TranslateSubtitleResponse =
     >
   | BackgroundErrorResponse<typeof BACKGROUND_MESSAGE_TYPES.translateSubtitle>;
 
+export type OpenSubtitlePreviewResponse =
+  | BackgroundSuccessResponse<
+      typeof BACKGROUND_MESSAGE_TYPES.openSubtitlePreview,
+      { opened: true }
+    >
+  | BackgroundErrorResponse<typeof BACKGROUND_MESSAGE_TYPES.openSubtitlePreview>;
+
+export type PolishSubtitleCuesResponse =
+  | BackgroundSuccessResponse<
+      typeof BACKGROUND_MESSAGE_TYPES.polishSubtitleCues,
+      {
+        cues: Array<{
+          index: number;
+          translation: string;
+        }>;
+      }
+    >
+  | BackgroundErrorResponse<typeof BACKGROUND_MESSAGE_TYPES.polishSubtitleCues>;
+
+export type TranslateSubtitleCuesResponse =
+  | BackgroundSuccessResponse<
+      typeof BACKGROUND_MESSAGE_TYPES.translateSubtitleCues,
+      {
+        cues: Array<{
+          index: number;
+          translation: string;
+        }>;
+      }
+    >
+  | BackgroundErrorResponse<typeof BACKGROUND_MESSAGE_TYPES.translateSubtitleCues>;
+
 export type BackgroundResponse =
   | GetSettingsResponse
+  | OpenSubtitlePreviewResponse
+  | PolishSubtitleCuesResponse
+  | TranslateSubtitleCuesResponse
   | TranslateSubtitleResponse
   | BackgroundErrorResponse<'unknown'>;
 
@@ -101,6 +189,70 @@ export function isBackgroundRequest(value: unknown): value is BackgroundRequest 
     return true;
   }
 
+  if (value.type === BACKGROUND_MESSAGE_TYPES.openSubtitlePreview) {
+    if (!isRecord(value.payload)) {
+      return false;
+    }
+
+    const { id, mode } = value.payload;
+    return (
+      typeof id === 'string' &&
+      id.length > 0 &&
+      (mode === 'translated' || mode === 'bilingual')
+    );
+  }
+
+  if (value.type === BACKGROUND_MESSAGE_TYPES.polishSubtitleCues) {
+    if (!isRecord(value.payload) || !Array.isArray(value.payload.cues)) {
+      return false;
+    }
+
+    const { pageUrl, sourceLanguageHint, targetLanguage, title } = value.payload;
+    return (
+      value.payload.cues.length > 0 &&
+      value.payload.cues.every((cue) => {
+        if (!isRecord(cue)) return false;
+        return (
+          typeof cue.index === 'number' &&
+          Number.isInteger(cue.index) &&
+          typeof cue.start === 'number' &&
+          typeof cue.end === 'number' &&
+          typeof cue.source === 'string' &&
+          typeof cue.translation === 'string'
+        );
+      }) &&
+      (pageUrl === undefined || typeof pageUrl === 'string') &&
+      (sourceLanguageHint === undefined || typeof sourceLanguageHint === 'string') &&
+      (targetLanguage === undefined || typeof targetLanguage === 'string') &&
+      (title === undefined || typeof title === 'string')
+    );
+  }
+
+  if (value.type === BACKGROUND_MESSAGE_TYPES.translateSubtitleCues) {
+    if (!isRecord(value.payload) || !Array.isArray(value.payload.cues)) {
+      return false;
+    }
+
+    const { pageUrl, sourceLanguageHint, targetLanguage, title } = value.payload;
+    return (
+      value.payload.cues.length > 0 &&
+      value.payload.cues.every((cue) => {
+        if (!isRecord(cue)) return false;
+        return (
+          typeof cue.index === 'number' &&
+          Number.isInteger(cue.index) &&
+          typeof cue.start === 'number' &&
+          typeof cue.end === 'number' &&
+          typeof cue.source === 'string'
+        );
+      }) &&
+      (pageUrl === undefined || typeof pageUrl === 'string') &&
+      (sourceLanguageHint === undefined || typeof sourceLanguageHint === 'string') &&
+      (targetLanguage === undefined || typeof targetLanguage === 'string') &&
+      (title === undefined || typeof title === 'string')
+    );
+  }
+
   if (value.type !== BACKGROUND_MESSAGE_TYPES.translateSubtitle) {
     return false;
   }
@@ -109,11 +261,12 @@ export function isBackgroundRequest(value: unknown): value is BackgroundRequest 
     return false;
   }
 
-  const { pageUrl, sourceLanguageHint, text } = value.payload;
+  const { force, pageUrl, sourceLanguageHint, text } = value.payload;
   return (
     typeof text === 'string' &&
     (pageUrl === undefined || typeof pageUrl === 'string') &&
-    (sourceLanguageHint === undefined || typeof sourceLanguageHint === 'string')
+    (sourceLanguageHint === undefined || typeof sourceLanguageHint === 'string') &&
+    (force === undefined || typeof force === 'boolean')
   );
 }
 
