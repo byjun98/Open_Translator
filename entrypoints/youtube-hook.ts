@@ -32,6 +32,13 @@ interface YtPlayerResponse {
 declare global {
   interface Window {
     ytInitialPlayerResponse?: YtPlayerResponse;
+    ytplayer?: {
+      config?: {
+        args?: {
+          raw_player_response?: YtPlayerResponse | string;
+        };
+      };
+    };
     __lstHookInstalled?: boolean;
   }
 }
@@ -43,6 +50,8 @@ export default defineUnlistedScript(() => {
   const SOURCE = 'Open_Translator';
   const MSG_TRACKS = '__LST_CAPTION_TRACKS__';
   const MSG_BODY = '__LST_TIMEDTEXT_BODY__';
+
+  let latestPlayerResponse: YtPlayerResponse | null = null;
 
   function getUrlString(input: unknown): string {
     if (typeof input === 'string') return input;
@@ -70,6 +79,89 @@ export default defineUnlistedScript(() => {
     );
   }
 
+  function isPlayerResponseUrl(url: string): boolean {
+    return url.includes('/youtubei/v1/player');
+  }
+
+  function getCurrentVideoIdFromLocation(): string | null {
+    if (window.location.pathname === '/watch') {
+      return new URLSearchParams(window.location.search).get('v');
+    }
+
+    const shortsMatch = window.location.pathname.match(/^\/shorts\/([^/?#]+)/);
+    return shortsMatch?.[1] ?? null;
+  }
+
+  function parsePlayerResponse(value: unknown): YtPlayerResponse | null {
+    if (!value) return null;
+
+    if (typeof value === 'string') {
+      try {
+        return parsePlayerResponse(JSON.parse(value));
+      } catch {
+        return null;
+      }
+    }
+
+    if (typeof value !== 'object') return null;
+
+    const response = value as YtPlayerResponse;
+    if (
+      response.videoDetails?.videoId ||
+      response.captions?.playerCaptionsTracklistRenderer?.captionTracks
+    ) {
+      return response;
+    }
+
+    return null;
+  }
+
+  function getCaptionTracks(resp: YtPlayerResponse | null) {
+    return resp?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+  }
+
+  function trackMatchesVideoId(track: YtCaptionTrack, videoId: string) {
+    if (!track.baseUrl) return false;
+
+    try {
+      const url = new URL(track.baseUrl, window.location.origin);
+      const trackVideoId = url.searchParams.get('v');
+      return !trackVideoId || trackVideoId === videoId;
+    } catch {
+      return true;
+    }
+  }
+
+  function playerResponseMatchesRoute(
+    resp: YtPlayerResponse | null,
+    routeVideoId: string | null,
+  ) {
+    if (!resp) return false;
+    if (!routeVideoId) return true;
+
+    const responseVideoId = resp.videoDetails?.videoId ?? null;
+    if (responseVideoId) {
+      return responseVideoId === routeVideoId;
+    }
+
+    return getCaptionTracks(resp).some((track) =>
+      trackMatchesVideoId(track, routeVideoId),
+    );
+  }
+
+  function rememberPlayerResponse(body: string, url: string) {
+    const parsed = parsePlayerResponse(body);
+    if (!parsed) return;
+
+    latestPlayerResponse = parsed;
+    console.log(
+      '[LST] player response captured',
+      parsed.videoDetails?.videoId ?? 'unknown',
+      url.slice(0, 120),
+    );
+    postTracks();
+  }
+
   function postBody(url: string, body: string) {
     try {
       window.postMessage(
@@ -90,18 +182,25 @@ export default defineUnlistedScript(() => {
     const response = await originalFetch(input, init);
     try {
       const url = getUrlString(input);
-      if (url && isTimedtextUrl(url)) {
+      if (url && (isTimedtextUrl(url) || isPlayerResponseUrl(url))) {
         response
           .clone()
           .text()
           .then((body) => {
+            if (!response.ok) return;
+
+            if (isPlayerResponseUrl(url)) {
+              rememberPlayerResponse(body, url);
+              return;
+            }
+
             console.log(
               '[LST] fetch captured',
               response.status,
               'len=' + body.length,
               url.slice(0, 140),
             );
-            if (response.ok) postBody(url, body);
+            postBody(url, body);
           })
           .catch(() => undefined);
       }
@@ -140,19 +239,26 @@ export default defineUnlistedScript(() => {
     ...args: unknown[]
   ) {
     const tracked = (this as unknown as { __lstUrl?: string }).__lstUrl;
-    if (tracked && isTimedtextUrl(tracked)) {
+    if (tracked && (isTimedtextUrl(tracked) || isPlayerResponseUrl(tracked))) {
       this.addEventListener('load', () => {
         try {
           const body = this.responseText ?? '';
+          if (this.status < 200 || this.status >= 300) {
+            return;
+          }
+
+          if (isPlayerResponseUrl(tracked)) {
+            rememberPlayerResponse(body, tracked);
+            return;
+          }
+
           console.log(
             '[LST] xhr captured',
             this.status,
             'len=' + body.length,
             tracked.slice(0, 140),
           );
-          if (this.status >= 200 && this.status < 300) {
-            postBody(tracked, body);
-          }
+          postBody(tracked, body);
         } catch {
           // ignore
         }
@@ -169,20 +275,34 @@ export default defineUnlistedScript(() => {
   // --- caption tracks extraction from ytInitialPlayerResponse ---
   function extractTracks() {
     try {
-      const resp = window.ytInitialPlayerResponse;
+      const routeVideoId = getCurrentVideoIdFromLocation();
+      const rawPlayerResponse = parsePlayerResponse(
+        window.ytplayer?.config?.args?.raw_player_response,
+      );
+      const candidates = [
+        latestPlayerResponse,
+        rawPlayerResponse,
+        parsePlayerResponse(window.ytInitialPlayerResponse),
+      ];
+      const resp =
+        candidates.find((candidate) =>
+          playerResponseMatchesRoute(candidate, routeVideoId),
+        ) ?? null;
+
       if (!resp) {
-        return { tracks: [], videoId: null, isLive: false };
+        return { tracks: [], videoId: routeVideoId, isLive: false };
       }
-      const trackList =
-        resp.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
-      const videoId = resp.videoDetails?.videoId ?? null;
+      const trackList = getCaptionTracks(resp);
+      const videoId = resp.videoDetails?.videoId ?? routeVideoId;
       const isLive = Boolean(
         resp.videoDetails?.isLive || resp.videoDetails?.isLiveContent,
       );
 
       const tracks = trackList
         .filter(
-          (t): t is YtCaptionTrack => Boolean(t && typeof t.baseUrl === 'string'),
+          (t): t is YtCaptionTrack =>
+            Boolean(t && typeof t.baseUrl === 'string') &&
+            (!routeVideoId || trackMatchesVideoId(t, routeVideoId)),
         )
         .map((t) => {
           let name: string | undefined;

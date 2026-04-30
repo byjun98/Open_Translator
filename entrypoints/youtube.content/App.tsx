@@ -39,6 +39,7 @@ type CaptionRect = {
   left: number;
   bottom: number;
   width: number;
+  isNative: boolean;
 };
 
 const PLAYER_BUTTON_ID = 'Open_Translator-player-button';
@@ -50,6 +51,45 @@ function isVideoPage() {
     location.hostname === 'www.youtube.com' &&
     (location.pathname === '/watch' || location.pathname.startsWith('/shorts/'))
   );
+}
+
+function getVideoRouteKey() {
+  return isVideoPage() ? `${location.pathname}${location.search}` : '';
+}
+
+function getVideoIdFromRouteKey(routeKey: string) {
+  if (!routeKey) return null;
+
+  if (routeKey.startsWith('/watch')) {
+    const queryIndex = routeKey.indexOf('?');
+    if (queryIndex < 0) return null;
+    return new URLSearchParams(routeKey.slice(queryIndex)).get('v');
+  }
+
+  const shortsMatch = routeKey.match(/^\/shorts\/([^/?#]+)/);
+  return shortsMatch?.[1] ?? null;
+}
+
+function captionTrackMatchesVideoId(baseUrl: string, videoId: string) {
+  try {
+    const url = new URL(baseUrl, location.origin);
+    const trackVideoId = url.searchParams.get('v');
+    return !trackVideoId || trackVideoId === videoId;
+  } catch {
+    return true;
+  }
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isExtensionContextInvalidatedError(error: unknown) {
+  return /extension context invalidated/i.test(getErrorMessage(error));
+}
+
+function removePlayerButton() {
+  document.getElementById(PLAYER_BUTTON_ID)?.remove();
 }
 
 function ensurePlayerButtonStyles() {
@@ -193,6 +233,42 @@ function findCaptionContainer() {
   return document.querySelector('#movie_player .ytp-caption-window-container');
 }
 
+function getPlayerRect() {
+  const player = document.querySelector('#movie_player');
+  if (!(player instanceof HTMLElement)) {
+    return null;
+  }
+
+  const rect = player.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+
+  return rect;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getPlayerFallbackCaptionRect() {
+  const playerRect = getPlayerRect();
+  if (!playerRect) {
+    return null;
+  }
+
+  const horizontalInset = Math.min(72, Math.max(16, playerRect.width * 0.04));
+  const width = Math.min(980, Math.max(240, playerRect.width - horizontalInset * 2));
+  const bottomInset = Math.min(128, Math.max(56, playerRect.height * 0.1));
+
+  return {
+    left: playerRect.left + (playerRect.width - width) / 2,
+    bottom: playerRect.bottom - bottomInset,
+    width,
+    isNative: false,
+  } satisfies CaptionRect;
+}
+
 function getVisibleCaptionWindows() {
   const container = findCaptionContainer();
   if (!(container instanceof HTMLElement)) {
@@ -217,7 +293,7 @@ function getVisibleCaptionWindows() {
 function getCaptionRect() {
   const windows = getVisibleCaptionWindows();
   if (windows.length === 0) {
-    return null;
+    return getPlayerFallbackCaptionRect();
   }
 
   const rects = windows
@@ -225,17 +301,32 @@ function getCaptionRect() {
     .filter((rect) => rect.width > 0 && rect.height > 0);
 
   if (rects.length === 0) {
-    return null;
+    return getPlayerFallbackCaptionRect();
   }
 
-  const left = Math.min(...rects.map((rect) => rect.left));
-  const right = Math.max(...rects.map((rect) => rect.right));
-  const bottom = Math.max(...rects.map((rect) => rect.bottom));
+  let left = Math.min(...rects.map((rect) => rect.left));
+  let right = Math.max(...rects.map((rect) => rect.right));
+  let bottom = Math.max(...rects.map((rect) => rect.bottom));
+
+  const playerRect = getPlayerRect();
+  if (playerRect) {
+    const inset = Math.min(24, Math.max(10, playerRect.width * 0.01));
+    const maxWidth = Math.max(120, playerRect.width - inset * 2);
+    const width = Math.min(right - left, maxWidth);
+    left = clamp(left, playerRect.left + inset, playerRect.right - inset - width);
+    right = left + width;
+    bottom = clamp(
+      bottom,
+      playerRect.top + Math.min(96, playerRect.height * 0.24),
+      playerRect.bottom - Math.min(28, Math.max(12, playerRect.height * 0.025)),
+    );
+  }
 
   return {
     left,
     bottom,
     width: right - left,
+    isNative: true,
   } satisfies CaptionRect;
 }
 
@@ -246,6 +337,7 @@ function App() {
   const [status, setStatus] = useState<TranslationStatus>('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [captionRect, setCaptionRect] = useState<CaptionRect | null>(null);
+  const [routeKey, setRouteKey] = useState(getVideoRouteKey);
 
   const lastKnownCaptionRectRef = useRef<CaptionRect | null>(null);
 
@@ -300,15 +392,58 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!isVideoPage()) {
-      return;
-    }
+    let disposed = false;
+    let routeTimer: number | null = null;
 
+    const commitRoute = () => {
+      if (!disposed) {
+        setRouteKey(getVideoRouteKey());
+      }
+    };
+
+    const scheduleRouteUpdate = () => {
+      commitRoute();
+
+      if (routeTimer !== null) {
+        window.clearTimeout(routeTimer);
+      }
+
+      routeTimer = window.setTimeout(() => {
+        routeTimer = null;
+        commitRoute();
+      }, 250);
+    };
+
+    scheduleRouteUpdate();
+
+    document.addEventListener('yt-navigate-start', scheduleRouteUpdate);
+    document.addEventListener('yt-navigate-finish', scheduleRouteUpdate);
+    document.addEventListener('yt-page-data-updated', scheduleRouteUpdate);
+    window.addEventListener('popstate', scheduleRouteUpdate);
+
+    return () => {
+      disposed = true;
+      if (routeTimer !== null) {
+        window.clearTimeout(routeTimer);
+      }
+      document.removeEventListener('yt-navigate-start', scheduleRouteUpdate);
+      document.removeEventListener('yt-navigate-finish', scheduleRouteUpdate);
+      document.removeEventListener('yt-page-data-updated', scheduleRouteUpdate);
+      window.removeEventListener('popstate', scheduleRouteUpdate);
+    };
+  }, []);
+
+  useEffect(() => {
     let observer: MutationObserver | null = null;
     let disposed = false;
 
     const mountButton = () => {
       if (disposed) {
+        return;
+      }
+
+      if (!isVideoPage()) {
+        removePlayerButton();
         return;
       }
 
@@ -352,13 +487,16 @@ function App() {
     };
 
     document.addEventListener('yt-navigate-finish', handleNavigation);
+    document.addEventListener('yt-page-data-updated', handleNavigation);
 
     return () => {
       disposed = true;
       observer?.disconnect();
+      removePlayerButton();
       document.removeEventListener('yt-navigate-finish', handleNavigation);
+      document.removeEventListener('yt-page-data-updated', handleNavigation);
     };
-  }, [errorMessage, settings.enabled]);
+  }, [errorMessage, routeKey, settings.enabled]);
 
   useEffect(() => {
     ensureNativeCaptionReplacementStyles();
@@ -370,7 +508,7 @@ function App() {
 
     const shouldHideNative =
       settings.enabled &&
-      Boolean(captionRect) &&
+      Boolean(captionRect?.isNative) &&
       Boolean(translatedText) &&
       !errorMessage;
     container.classList.toggle('Open_Translator-hide-native', shouldHideNative);
@@ -381,7 +519,7 @@ function App() {
   }, [captionRect, errorMessage, settings.enabled, translatedText]);
 
   useEffect(() => {
-    if (!settings.enabled) {
+    if (!settings.enabled || !routeKey) {
       setSourceText('');
       setTranslatedText('');
       setErrorMessage('');
@@ -390,6 +528,11 @@ function App() {
       lastKnownCaptionRectRef.current = null;
       return;
     }
+
+    setSourceText('');
+    setTranslatedText('');
+    setErrorMessage('');
+    setStatus('observing');
 
     let active = true;
     let cues: CaptionCue[] = [];
@@ -401,6 +544,9 @@ function App() {
     let rectPollTimer: number | null = null;
     let cueApplyTimer: number | null = null;
     let pendingCueIndex: number | null = null;
+    let cueGeneration = 0;
+    let contextInvalidated = false;
+    const expectedVideoId = getVideoIdFromRouteKey(routeKey);
     const translationByText = new Map<string, string>();
     const prefetchEnqueued = new Set<string>();
     const prefetchQueue: string[] = [];
@@ -428,18 +574,41 @@ function App() {
     };
 
     const resetCueState = () => {
+      cueGeneration += 1;
       clearPendingCue();
       cues = [];
       activeCueIndex = -1;
       prefetchQueue.length = 0;
       prefetchEnqueued.clear();
+      translationByText.clear();
       setSourceText('');
       setTranslatedText('');
+    };
+
+    const stopAfterExtensionContextInvalidated = () => {
+      contextInvalidated = true;
+      active = false;
+      resetCueState();
+      setErrorMessage('');
+      setStatus('idle');
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      if (rectPollTimer !== null) {
+        window.clearInterval(rectPollTimer);
+        rectPollTimer = null;
+      }
+      fetchAbort?.abort();
+      console.warn(
+        '[LST] extension context invalidated; reload the YouTube tab after reloading the extension.',
+      );
     };
 
     const drainPrefetchQueue = () => {
       while (
         active &&
+        !contextInvalidated &&
         prefetchInFlight < PREFETCH_CONCURRENCY &&
         prefetchQueue.length > 0
       ) {
@@ -459,6 +628,7 @@ function App() {
     };
 
     const enqueuePrefetch = (text: string) => {
+      if (contextInvalidated) return;
       if (!text) return;
       if (translationByText.has(text)) return;
       if (prefetchEnqueued.has(text)) return;
@@ -467,7 +637,9 @@ function App() {
       drainPrefetchQueue();
     };
 
-    const translateText = async (text: string) => {
+    const translateText = async (text: string, generation = cueGeneration) => {
+      if (contextInvalidated) return;
+      if (generation !== cueGeneration) return;
       if (translationByText.has(text)) return;
       translationByText.set(text, '');
 
@@ -481,7 +653,7 @@ function App() {
           },
         })) as TranslateSubtitleResponse;
 
-        if (!active) return;
+        if (!active || generation !== cueGeneration) return;
 
         if (response.ok) {
           translationByText.set(text, response.data.translation);
@@ -502,7 +674,11 @@ function App() {
         }
       } catch (error) {
         translationByText.delete(text);
-        if (!active) return;
+        if (isExtensionContextInvalidatedError(error)) {
+          stopAfterExtensionContextInvalidated();
+          return;
+        }
+        if (!active || generation !== cueGeneration) return;
         const currentCue = cues[activeCueIndex];
         if (currentCue && currentCue.text === text) {
           setStatus('error');
@@ -539,7 +715,7 @@ function App() {
       } else {
         setTranslatedText('');
         setStatus('translating');
-        void translateText(cue.text);
+        void translateText(cue.text, cueGeneration);
       }
 
       for (let offset = 1; offset <= CUE_PREFETCH_COUNT; offset += 1) {
@@ -552,6 +728,12 @@ function App() {
     const scheduleActiveCue = (nextIndex: number) => {
       if (nextIndex === activeCueIndex) {
         clearPendingCue();
+        return;
+      }
+
+      if (nextIndex >= 0 || settings.debounceMs <= 0) {
+        clearPendingCue();
+        commitActiveCue(nextIndex);
         return;
       }
 
@@ -602,21 +784,47 @@ function App() {
       videoId: string | null,
       isLive: boolean,
     ) => {
-      if (fetchAbort) fetchAbort.abort();
+      if (contextInvalidated) return;
 
-      if (videoId !== currentVideoId) {
-        translationByText.clear();
-        resetCueState();
-        currentVideoId = videoId;
-      }
-
-      if (isLive || tracks.length === 0) {
-        resetCueState();
-        setStatus(tracks.length === 0 ? 'idle' : 'observing');
+      if (expectedVideoId && videoId && videoId !== expectedVideoId) {
+        console.log(
+          '[LST] ignoring stale caption tracks videoId=' +
+            videoId +
+            ' expected=' +
+            expectedVideoId,
+        );
         return;
       }
 
-      const track = pickCaptionTrack(tracks, 'en');
+      const scopedTracks = expectedVideoId
+        ? tracks.filter((track) =>
+            captionTrackMatchesVideoId(track.baseUrl, expectedVideoId),
+          )
+        : tracks;
+      const effectiveVideoId = videoId ?? expectedVideoId;
+
+      if (expectedVideoId && tracks.length > 0 && scopedTracks.length === 0) {
+        console.log(
+          '[LST] ignoring caption tracks without current video id expected=' +
+            expectedVideoId,
+        );
+        return;
+      }
+
+      if (fetchAbort) fetchAbort.abort();
+
+      if (effectiveVideoId !== currentVideoId) {
+        resetCueState();
+        currentVideoId = effectiveVideoId;
+      }
+
+      if (isLive || scopedTracks.length === 0) {
+        resetCueState();
+        setStatus(scopedTracks.length === 0 ? 'idle' : 'observing');
+        return;
+      }
+
+      const track = pickCaptionTrack(scopedTracks, 'en');
       if (!track) {
         resetCueState();
         setStatus('idle');
@@ -627,12 +835,13 @@ function App() {
       const isAutoGeneratedTrack = track.kind === 'asr';
       const localAbort = new AbortController();
       fetchAbort = localAbort;
+      const loadGeneration = cueGeneration;
       setStatus('observing');
 
       try {
         const nextCues = await fetchCaptionCues(
           track.baseUrl,
-          videoId,
+          effectiveVideoId,
           track.languageCode || 'en',
           localAbort.signal,
           {
@@ -640,7 +849,13 @@ function App() {
             maxCharactersPerCue: settings.maxCharactersPerRequest,
           },
         );
-        if (!active || localAbort.signal.aborted) return;
+        if (
+          !active ||
+          localAbort.signal.aborted ||
+          loadGeneration !== cueGeneration
+        ) {
+          return;
+        }
         cues = nextCues;
         activeCueIndex = -1;
         setErrorMessage('');
@@ -696,6 +911,7 @@ function App() {
     };
 
     document.addEventListener('yt-navigate-finish', handleNavigation);
+    document.addEventListener('yt-page-data-updated', handleNavigation);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     window.addEventListener('popstate', handleNavigation);
     window.addEventListener('resize', handleViewportMove);
@@ -709,6 +925,7 @@ function App() {
       fetchAbort?.abort();
       unsubscribe();
       document.removeEventListener('yt-navigate-finish', handleNavigation);
+      document.removeEventListener('yt-page-data-updated', handleNavigation);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       window.removeEventListener('popstate', handleNavigation);
       window.removeEventListener('resize', handleViewportMove);
@@ -720,10 +937,11 @@ function App() {
     settings.maxCharactersPerRequest,
     settings.model,
     settings.promptTemplate,
+    routeKey,
     settings.targetLanguage,
   ]);
 
-  if (!settings.enabled || !isVideoPage()) {
+  if (!settings.enabled || !routeKey) {
     return null;
   }
 

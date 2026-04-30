@@ -456,7 +456,7 @@ function App() {
                     <input
                       className="control"
                       id="debounce"
-                      min={180}
+                      min={0}
                       onChange={(event) =>
                         updateNumberSetting('debounceMs', event.currentTarget.value)
                       }

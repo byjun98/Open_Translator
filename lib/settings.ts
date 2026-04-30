@@ -23,10 +23,10 @@ Return only the translated subtitle text.
 
 {{text}}`,
   requestTimeoutMs: 30000,
-  debounceMs: 220,
+  debounceMs: 80,
   showSourceCaption: true,
   overlayPosition: 'bottom',
-  maxCharactersPerRequest: 280,
+  maxCharactersPerRequest: 180,
 };
 
 const legacyInvalidModels = new Set([
@@ -36,9 +36,11 @@ const legacyInvalidModels = new Set([
   'o4-mini',
 ]);
 
-const SETTINGS_SCHEMA_VERSION = 2;
+const SETTINGS_SCHEMA_VERSION = 3;
 const SETTINGS_SCHEMA_VERSION_KEY = 'settingsSchemaVersion';
 const LEGACY_DEFAULT_MAX_CHARACTERS_PER_REQUEST = 160;
+const PREVIOUS_DEFAULT_DEBOUNCE_MS = 220;
+const PREVIOUS_DEFAULT_MAX_CHARACTERS_PER_REQUEST = 280;
 
 const storageKeys = Object.keys(defaults) as (keyof ExtensionSettings)[];
 
@@ -115,7 +117,7 @@ function sanitizeSettings(
       5000,
       120000,
     ),
-    debounceMs: sanitizeInteger(value.debounceMs, defaults.debounceMs, 180, 2000),
+    debounceMs: sanitizeInteger(value.debounceMs, defaults.debounceMs, 0, 2000),
     showSourceCaption: sanitizeBoolean(
       value.showSourceCaption,
       defaults.showSourceCaption,
@@ -151,10 +153,19 @@ export async function loadSettings(): Promise<ExtensionSettings> {
 
   if (
     needsMigration &&
-    storedRecord.maxCharactersPerRequest ===
-      LEGACY_DEFAULT_MAX_CHARACTERS_PER_REQUEST
+    (storedRecord.maxCharactersPerRequest ===
+      LEGACY_DEFAULT_MAX_CHARACTERS_PER_REQUEST ||
+      storedRecord.maxCharactersPerRequest ===
+        PREVIOUS_DEFAULT_MAX_CHARACTERS_PER_REQUEST)
   ) {
     nextRecord.maxCharactersPerRequest = defaults.maxCharactersPerRequest;
+  }
+
+  if (
+    needsMigration &&
+    storedRecord.debounceMs === PREVIOUS_DEFAULT_DEBOUNCE_MS
+  ) {
+    nextRecord.debounceMs = defaults.debounceMs;
   }
 
   const settings = sanitizeSettings(nextRecord);

@@ -40,9 +40,9 @@ interface Json3Payload {
   events?: Json3Event[];
 }
 
-const ASR_DEFAULT_MAX_MERGED_CHARS = 280;
-const ASR_MAX_MERGED_DURATION_SECONDS = 7;
-const ASR_MAX_MERGE_GAP_SECONDS = 1.2;
+const ASR_DEFAULT_MAX_MERGED_CHARS = 180;
+const ASR_MAX_MERGED_DURATION_SECONDS = 4.5;
+const ASR_MAX_MERGE_GAP_SECONDS = 0.8;
 const ASR_SENTENCE_END_RE = /[.!?。！？…]["'”’)\]]*$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

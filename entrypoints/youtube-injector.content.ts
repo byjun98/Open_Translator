@@ -5,7 +5,7 @@
 // scripts run too late to monkey-patch window.fetch.
 
 export default defineContentScript({
-  matches: ['https://www.youtube.com/watch*', 'https://www.youtube.com/shorts/*'],
+  matches: ['https://www.youtube.com/*'],
   runAt: 'document_start',
   main() {
     try {
