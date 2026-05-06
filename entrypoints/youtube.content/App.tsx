@@ -13,10 +13,10 @@ import {
   type ExtensionSettings,
 } from '../../lib/settings.ts';
 import {
-  SUBTITLE_EXPORT_STORAGE_PREFIX,
   type SubtitleExportMode,
   type SubtitleExportPayload,
 } from '../../lib/subtitle-export.ts';
+import { saveSubtitleExportPayload } from '../../lib/subtitle-export-storage.ts';
 import {
   fetchCaptionCues,
   findActiveCueIndex,
@@ -96,6 +96,11 @@ function captionTrackMatchesVideoId(baseUrl: string, videoId: string) {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getBackgroundErrorMessage(error: { code?: string; message?: string }) {
+  const code = error.code ? `[${error.code}] ` : '';
+  return `${code}${error.message || 'Unknown background error'}`;
 }
 
 function isExtensionContextInvalidatedError(error: unknown) {
@@ -548,9 +553,7 @@ function App() {
         recommendedMode: mode,
       };
 
-      await browser.storage.local.set({
-        [`${SUBTITLE_EXPORT_STORAGE_PREFIX}${id}`]: payload,
-      });
+      await saveSubtitleExportPayload(id, payload);
 
       const openResponse = (await browser.runtime.sendMessage({
         type: BACKGROUND_MESSAGE_TYPES.openSubtitlePreview,
@@ -876,7 +879,10 @@ function App() {
         if (!active || generation !== cueGeneration) return;
 
         if (!response.ok) {
-          console.warn('[LST] contextual subtitle translation failed', response.error);
+          console.warn(
+            `[LST] contextual subtitle translation failed: ${getBackgroundErrorMessage(response.error)}`,
+            response.error,
+          );
           return;
         }
 

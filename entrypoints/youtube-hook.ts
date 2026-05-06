@@ -50,6 +50,10 @@ export default defineUnlistedScript(() => {
   const SOURCE = 'Open_Translator';
   const MSG_TRACKS = '__LST_CAPTION_TRACKS__';
   const MSG_BODY = '__LST_TIMEDTEXT_BODY__';
+  const BRIDGE_TOKEN =
+    document.currentScript instanceof HTMLScriptElement
+      ? (document.currentScript.dataset.lstBridgeToken ?? '')
+      : '';
 
   let latestPlayerResponse: YtPlayerResponse | null = null;
 
@@ -163,9 +167,10 @@ export default defineUnlistedScript(() => {
   }
 
   function postBody(url: string, body: string) {
+    if (!BRIDGE_TOKEN) return;
     try {
       window.postMessage(
-        { source: SOURCE, type: MSG_BODY, url, body },
+        { source: SOURCE, type: MSG_BODY, token: BRIDGE_TOKEN, url, body },
         window.location.origin,
       );
     } catch {
@@ -333,10 +338,24 @@ export default defineUnlistedScript(() => {
   }
 
   function postTracks() {
+    if (!BRIDGE_TOKEN) return;
     const payload = extractTracks();
     window.postMessage(
-      Object.assign({ source: SOURCE, type: MSG_TRACKS }, payload),
+      Object.assign(
+        { source: SOURCE, type: MSG_TRACKS, token: BRIDGE_TOKEN },
+        payload,
+      ),
       window.location.origin,
+    );
+  }
+
+  function isTrustedBridgeEvent(event: Event) {
+    if (!(event instanceof CustomEvent)) return false;
+    const detail = event.detail;
+    return (
+      typeof detail === 'object' &&
+      detail !== null &&
+      (detail as { token?: unknown }).token === BRIDGE_TOKEN
     );
   }
 
@@ -357,5 +376,9 @@ export default defineUnlistedScript(() => {
   document.addEventListener('yt-page-data-updated', () => {
     window.setTimeout(postTracks, 180);
   });
-  window.addEventListener('__lst_request_tracks__', postTracks);
+  window.addEventListener('__lst_request_tracks__', (event) => {
+    if (isTrustedBridgeEvent(event)) {
+      postTracks();
+    }
+  });
 });

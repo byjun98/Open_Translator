@@ -1,12 +1,15 @@
 import {
   HARD_CODED_PROXY_BASE_URL,
+  PROXY_BASE_URLS,
   type BackgroundErrorCode,
   type BackgroundErrorDetails,
 } from './messages.ts';
 
 const ALLOWED_PROXY_HOSTS = new Set(['127.0.0.1']);
-const REQUIRED_PROXY_PORT = '10531';
+const ALLOWED_PROXY_PORTS = new Set(['10531', '10532']);
 const REQUIRED_PROXY_PREFIX = '/v1';
+const PROXY_PROBE_TIMEOUT_MS = 1500;
+let cachedProxyBaseUrl: string | undefined;
 
 export interface ChatCompletionMessage {
   role: 'assistant' | 'system' | 'user';
@@ -96,8 +99,8 @@ function validateProxyBaseUrl(baseUrl: string): URL {
     throw new Error('The local proxy URL must stay on localhost or 127.0.0.1.');
   }
 
-  if (parsed.port !== REQUIRED_PROXY_PORT) {
-    throw new Error('The local proxy URL must use port 10531.');
+  if (!ALLOWED_PROXY_PORTS.has(parsed.port)) {
+    throw new Error('The local proxy URL must use port 10531 or 10532.');
   }
 
   if (parsed.search || parsed.hash) {
@@ -118,21 +121,75 @@ function isReasoningModel(model: string): boolean {
   return /^(gpt-5(?:\.\d+)?(?:-|$)|o[1-9](?:-|$))/i.test(model);
 }
 
-function getChatCompletionsUrl(): URL {
-  const baseUrl = validateProxyBaseUrl(HARD_CODED_PROXY_BASE_URL);
-  const pathPrefix = baseUrl.pathname.replace(/\/+$/, '');
-  const endpoint = new URL(baseUrl.origin);
-  endpoint.pathname = `${pathPrefix}/chat/completions`;
+function getProxyEndpoint(baseUrl: string, endpointPath: string): URL {
+  const parsedBaseUrl = validateProxyBaseUrl(baseUrl);
+  const pathPrefix = parsedBaseUrl.pathname.replace(/\/+$/, '');
+  const endpoint = new URL(parsedBaseUrl.origin);
+  endpoint.pathname = `${pathPrefix}${endpointPath}`;
 
   if (
     !ALLOWED_PROXY_HOSTS.has(endpoint.hostname) ||
-    endpoint.port !== REQUIRED_PROXY_PORT ||
-    endpoint.pathname !== `${REQUIRED_PROXY_PREFIX}/chat/completions`
+    !ALLOWED_PROXY_PORTS.has(endpoint.port) ||
+    endpoint.pathname !== `${REQUIRED_PROXY_PREFIX}${endpointPath}`
   ) {
-    throw new Error('The resolved chat completions endpoint is not allowed.');
+    throw new Error('The resolved proxy endpoint is not allowed.');
   }
 
   return endpoint;
+}
+
+function getCandidateProxyBaseUrls(): string[] {
+  if (!cachedProxyBaseUrl) {
+    return [...PROXY_BASE_URLS];
+  }
+
+  return [
+    cachedProxyBaseUrl,
+    ...PROXY_BASE_URLS.filter((baseUrl) => baseUrl !== cachedProxyBaseUrl),
+  ];
+}
+
+async function probeProxyBaseUrl(baseUrl: string): Promise<boolean> {
+  const endpoint = getProxyEndpoint(baseUrl, '/models');
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(
+    () => controller.abort(),
+    PROXY_PROBE_TIMEOUT_MS,
+  );
+
+  try {
+    const response = await fetch(endpoint, {
+      headers: {
+        Accept: 'application/json',
+      },
+      signal: controller.signal,
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    return contentType.includes('application/json');
+  } catch {
+    return false;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
+
+async function getChatCompletionsUrl(): Promise<URL> {
+  const fallbackBaseUrl = validateProxyBaseUrl(HARD_CODED_PROXY_BASE_URL);
+
+  for (const candidateBaseUrl of getCandidateProxyBaseUrls()) {
+    try {
+      if (await probeProxyBaseUrl(candidateBaseUrl)) {
+        cachedProxyBaseUrl = candidateBaseUrl;
+        return getProxyEndpoint(candidateBaseUrl, '/chat/completions');
+      }
+    } catch {
+      // Try the next configured localhost proxy port.
+    }
+  }
+
+  throw new Error(
+    `No local OpenAI-compatible proxy responded on ${fallbackBaseUrl.hostname}:10531 or ${fallbackBaseUrl.hostname}:10532.`,
+  );
 }
 
 async function readResponseBody(response: Response): Promise<unknown> {
@@ -174,11 +231,15 @@ export async function requestChatCompletion({
   let endpoint: URL;
 
   try {
-    endpoint = getChatCompletionsUrl();
+    endpoint = await getChatCompletionsUrl();
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : 'The local proxy URL is invalid.';
-    return createProxyError('PROXY_CONFIG', message);
+      error instanceof Error
+        ? error.message
+        : 'The local proxy request endpoint is unavailable.';
+    return createProxyError('PROXY_NETWORK_ERROR', message, {
+      retriable: true,
+    });
   }
 
   const controller = new AbortController();
@@ -261,6 +322,7 @@ export async function requestChatCompletion({
         ? error.message
         : 'The local proxy request failed unexpectedly.';
 
+    cachedProxyBaseUrl = undefined;
     return createProxyError('PROXY_NETWORK_ERROR', message, {
       retriable: true,
     });

@@ -2,6 +2,7 @@ import {
   isCaptionTracksMessage,
   type CaptionTracksMessage,
 } from './captions.ts';
+import { getOrCreateBridgeToken } from './bridgeToken.ts';
 
 const SOURCE = 'Open_Translator';
 const MSG_BODY = '__LST_TIMEDTEXT_BODY__';
@@ -52,12 +53,19 @@ const MAX_CACHED = 32;
 const bodyListeners = new Set<(message: TimedtextBodyMessage) => void>();
 const errorListeners = new Set<(message: TimedtextErrorMessage) => void>();
 
+function hasValidBridgeToken(value: unknown) {
+  if (typeof value !== 'object' || value === null) return false;
+  const r = value as Record<string, unknown>;
+  return r.token === getOrCreateBridgeToken();
+}
+
 let bridgeInstalled = false;
 function ensureBridgeInstalled() {
   if (bridgeInstalled) return;
   bridgeInstalled = true;
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
+    if (!hasValidBridgeToken(event.data)) return;
     if (!isTimedtextBodyMessage(event.data)) return;
     console.log(
       '[LST] bridge received body',
@@ -83,6 +91,7 @@ function ensureBridgeInstalled() {
 
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
+    if (!hasValidBridgeToken(event.data)) return;
     if (!isTimedtextErrorMessage(event.data)) return;
     for (const listener of errorListeners) {
       try {
@@ -97,7 +106,13 @@ function ensureBridgeInstalled() {
 ensureBridgeInstalled();
 
 export function requestTracksFromPage() {
-  window.dispatchEvent(new Event('__lst_request_tracks__'));
+  window.dispatchEvent(
+    new CustomEvent('__lst_request_tracks__', {
+      detail: {
+        token: getOrCreateBridgeToken(),
+      },
+    }),
+  );
 }
 
 export function subscribeToCaptionTracks(
@@ -105,6 +120,7 @@ export function subscribeToCaptionTracks(
 ): () => void {
   const listener = (event: MessageEvent) => {
     if (event.source !== window) return;
+    if (!hasValidBridgeToken(event.data)) return;
     if (!isCaptionTracksMessage(event.data)) return;
     handler(event.data);
   };
@@ -205,6 +221,7 @@ export function requestTimedtextBodyFromPage(
         detail: {
           baseUrl,
           requestId,
+          token: getOrCreateBridgeToken(),
         },
       }),
     );

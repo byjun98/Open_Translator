@@ -7,8 +7,7 @@ $ErrorActionPreference = 'Stop'
 $AppDir = Join-Path $env:LOCALAPPDATA 'Open_Translator'
 $LogPath = Join-Path $AppDir 'openai-oauth.log'
 $PidPath = Join-Path $AppDir 'openai-oauth.pid'
-$PreferredPort = 10531
-$KnownPorts = @(10531, 10532)
+$CandidatePorts = @(10531, 10532)
 
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
 
@@ -36,30 +35,39 @@ function Test-OpenAIOAuthProcess {
 }
 
 if ($StopDuplicatePorts) {
-Get-ListenerProcesses -Ports $KnownPorts |
-    Where-Object {
-      $_.Port -ne $PreferredPort -and
-      (Test-OpenAIOAuthProcess -CommandLine $_.CommandLine)
-    } |
+  @(Get-ListenerProcesses -Ports $CandidatePorts |
+    Where-Object { Test-OpenAIOAuthProcess -CommandLine $_.CommandLine } |
+    Sort-Object Port |
+    Select-Object -Skip 1) |
     ForEach-Object {
       Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
 }
 
-$preferredListener = Get-ListenerProcesses -Ports @($PreferredPort) | Select-Object -First 1
-if ($preferredListener) {
-  if (Test-OpenAIOAuthProcess -CommandLine $preferredListener.CommandLine) {
-    Set-Content -Path $PidPath -Value $preferredListener.ProcessId -Encoding ascii
-    Write-Host "openai-oauth is already running on port $PreferredPort. PID: $($preferredListener.ProcessId)"
-    exit 0
-  }
+$listeners = @(Get-ListenerProcesses -Ports $CandidatePorts)
+$existingProxy = $listeners |
+  Where-Object { Test-OpenAIOAuthProcess -CommandLine $_.CommandLine } |
+  Select-Object -First 1
 
-  Write-Error "Port $PreferredPort is already used by another process. PID: $($preferredListener.ProcessId)"
+if ($existingProxy) {
+  Set-Content -Path $PidPath -Value $existingProxy.ProcessId -Encoding ascii
+  Write-Host "openai-oauth is already running on port $($existingProxy.Port). PID: $($existingProxy.ProcessId)"
+  exit 0
+}
+
+$busyPorts = @($listeners | Select-Object -ExpandProperty Port)
+$selectedPort = $CandidatePorts |
+  Where-Object { $busyPorts -notcontains $_ } |
+  Select-Object -First 1
+
+if (-not $selectedPort) {
+  $busyText = ($listeners | ForEach-Object { "port $($_.Port) PID $($_.ProcessId)" }) -join ', '
+  Write-Error "Ports 10531 and 10532 are already used by other processes. $busyText"
   exit 1
 }
 
 $command = @"
-npx -y openai-oauth *> "$LogPath"
+npx -y openai-oauth --port $selectedPort *> "$LogPath"
 "@
 
 $process = Start-Process `
@@ -71,11 +79,11 @@ $process = Start-Process `
 Set-Content -Path $PidPath -Value $process.Id -Encoding ascii
 Start-Sleep -Seconds 2
 
-$newListener = Get-ListenerProcesses -Ports @($PreferredPort) | Select-Object -First 1
+$newListener = Get-ListenerProcesses -Ports @($selectedPort) | Select-Object -First 1
 if ($newListener -and (Test-OpenAIOAuthProcess -CommandLine $newListener.CommandLine)) {
-  Write-Host "openai-oauth started hidden on port $PreferredPort. PID: $($newListener.ProcessId)"
+  Write-Host "openai-oauth started hidden on port $selectedPort. PID: $($newListener.ProcessId)"
   exit 0
 }
 
-Write-Warning "openai-oauth was started hidden, but port $PreferredPort is not listening yet."
+Write-Warning "openai-oauth was started hidden, but port $selectedPort is not listening yet."
 Write-Warning "Log: $LogPath"

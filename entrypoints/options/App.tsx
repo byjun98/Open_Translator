@@ -1,5 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { fetchProxyModels } from '../../lib/proxy-models';
+import {
+  fetchProxyModels,
+  type ProxyModelsResult,
+} from '../../lib/proxy-models';
 import {
   defaults,
   loadSettings,
@@ -97,12 +100,38 @@ function formatClock(date: Date) {
   }).format(date);
 }
 
+function formatProxyLocation(baseUrl: string | undefined) {
+  if (!baseUrl) return 'localhost';
+  try {
+    const url = new URL(baseUrl);
+    return `${url.hostname}:${url.port || '443'}`;
+  } catch {
+    return baseUrl;
+  }
+}
+
+function formatProxyHint(
+  proxyStatus: ProxyModelsResult | null,
+  modelCount: number,
+) {
+  if (!proxyStatus) {
+    return `현재 모델 ${modelCount}개 중 하나를 선택하세요.`;
+  }
+
+  if (proxyStatus.source === 'proxy') {
+    return `로컬 프록시 ${formatProxyLocation(proxyStatus.baseUrl)}에서 모델 ${modelCount}개를 확인했습니다.`;
+  }
+
+  return `프록시에 연결하지 못해 기본 모델 ${modelCount}개를 보여줍니다. proxy:start 상태를 확인하세요.`;
+}
+
 function App() {
   const [settings, setSettings] = useState<ExtensionSettings | null>(null);
   const [savedSettings, setSavedSettings] = useState<ExtensionSettings | null>(
     null,
   );
   const [modelOptions, setModelOptions] = useState<string[]>([defaults.model]);
+  const [proxyStatus, setProxyStatus] = useState<ProxyModelsResult | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -113,7 +142,7 @@ function App() {
 
     async function hydrate() {
       try {
-        const [loaded, models] = await Promise.all([
+        const [loaded, proxy] = await Promise.all([
           loadSettings(),
           fetchProxyModels(),
         ]);
@@ -123,7 +152,8 @@ function App() {
 
         setSettings(loaded);
         setSavedSettings(loaded);
-        setModelOptions(Array.from(new Set([loaded.model, ...models])));
+        setProxyStatus(proxy);
+        setModelOptions(Array.from(new Set([loaded.model, ...proxy.models])));
       } catch (loadError) {
         if (cancelled) {
           return;
@@ -235,6 +265,41 @@ function App() {
     setError(null);
   }
 
+  function buildDiagnostics() {
+    const attempts =
+      proxyStatus?.attempts
+        .map((attempt) => {
+          const status = attempt.status ? ` HTTP ${attempt.status}` : '';
+          const result = attempt.ok ? 'OK' : `FAIL ${attempt.error ?? ''}`.trim();
+          return `- ${attempt.baseUrl}${status}: ${result}`;
+        })
+        .join('\n') ?? '- 아직 확인하지 않음';
+
+    return [
+      'Open_Translator diagnostics',
+      `time: ${new Date().toISOString()}`,
+      `extension enabled: ${settings?.enabled ?? 'unknown'}`,
+      `model: ${settings?.model ?? 'unknown'}`,
+      `target language: ${settings?.targetLanguage ?? 'unknown'}`,
+      `proxy source: ${proxyStatus?.source ?? 'not checked'}`,
+      `proxy baseUrl: ${proxyStatus?.baseUrl ?? 'none'}`,
+      `proxy error: ${proxyStatus?.error ?? 'none'}`,
+      'proxy attempts:',
+      attempts,
+    ].join('\n');
+  }
+
+  async function handleCopyDiagnostics() {
+    try {
+      await navigator.clipboard.writeText(buildDiagnostics());
+      setMessage('진단 정보를 클립보드에 복사했습니다.');
+      setError(null);
+    } catch (copyError) {
+      setError(formatError(copyError, '진단 정보를 복사하지 못했습니다.'));
+      setMessage(null);
+    }
+  }
+
   function renderPreviewContent(position: OverlayPosition) {
     if (!settings?.enabled) {
       return <div className="preview-badge">번역 일시정지</div>;
@@ -301,6 +366,14 @@ function App() {
                 {settings.enabled ? '번역 켜짐' : '번역 꺼짐'}
               </span>
               <span className="status-pill status-pill--muted">동기화 저장소</span>
+              <span
+                className={`status-pill ${
+                  proxyStatus?.source === 'proxy'
+                    ? 'status-pill--enabled'
+                    : 'status-pill--disabled'
+                }`}>
+                {proxyStatus?.source === 'proxy' ? '프록시 연결됨' : '프록시 확인 필요'}
+              </span>
             </div>
             <div className="hero-metrics">
               <div className="metric-card">
@@ -407,7 +480,7 @@ function App() {
               <div className="section-body">
                 <Field
                   full
-                  hint={`현재 로컬 프록시에서 확인된 모델 ${modelOptions.length}개 중 하나를 선택하세요.`}
+                  hint={formatProxyHint(proxyStatus, modelOptions.length)}
                   htmlFor="model"
                   label="모델">
                   <select
@@ -613,6 +686,13 @@ function App() {
                   onClick={handleReset}
                   type="button">
                   기본값으로 초기화
+                </button>
+                <button
+                  className="button button--secondary"
+                  disabled={isSaving}
+                  onClick={() => void handleCopyDiagnostics()}
+                  type="button">
+                  진단 정보 복사
                 </button>
               </div>
 

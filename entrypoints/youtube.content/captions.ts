@@ -44,9 +44,63 @@ const ASR_DEFAULT_MAX_MERGED_CHARS = 180;
 const ASR_MAX_MERGED_DURATION_SECONDS = 4.5;
 const ASR_MAX_MERGE_GAP_SECONDS = 0.8;
 const ASR_SENTENCE_END_RE = /[.!?。！？…]["'”’)\]]*$/;
+const MAX_CAPTION_TRACKS = 80;
+const MAX_TRACK_URL_LENGTH = 8000;
+const MAX_TRACK_FIELD_LENGTH = 256;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isShortString(value: unknown, maxLength = MAX_TRACK_FIELD_LENGTH) {
+  return typeof value === 'string' && value.length <= maxLength;
+}
+
+function isAllowedYoutubeHost(hostname: string) {
+  const host = hostname.toLowerCase();
+  return host === 'youtube.com' || host.endsWith('.youtube.com');
+}
+
+export function getAllowedTimedtextUrl(value: string): URL {
+  if (value.length === 0 || value.length > MAX_TRACK_URL_LENGTH) {
+    throw new Error('caption URL length is invalid');
+  }
+
+  const url = new URL(value, location.origin);
+  const allowedPath =
+    url.pathname === '/api/timedtext' ||
+    url.pathname.endsWith('/api/timedtext') ||
+    url.pathname === '/timedtext' ||
+    url.pathname === '/youtubei/v1/get_transcript';
+
+  if (
+    url.protocol !== 'https:' ||
+    !isAllowedYoutubeHost(url.hostname) ||
+    !allowedPath
+  ) {
+    throw new Error('caption URL is not a YouTube timedtext endpoint');
+  }
+
+  return url;
+}
+
+function isAllowedTimedtextUrl(value: unknown) {
+  if (typeof value !== 'string') return false;
+  try {
+    getAllowedTimedtextUrl(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isCaptionTrack(value: unknown): value is CaptionTrack {
+  if (!isRecord(value)) return false;
+  if (!isAllowedTimedtextUrl(value.baseUrl)) return false;
+  if (!isShortString(value.languageCode, 48)) return false;
+  if (value.kind !== undefined && !isShortString(value.kind, 48)) return false;
+  if (value.name !== undefined && !isShortString(value.name)) return false;
+  return true;
 }
 
 export function isCaptionTracksMessage(value: unknown): value is CaptionTracksMessage {
@@ -54,6 +108,11 @@ export function isCaptionTracksMessage(value: unknown): value is CaptionTracksMe
   if (value.source !== 'Open_Translator') return false;
   if (value.type !== '__LST_CAPTION_TRACKS__') return false;
   if (!Array.isArray(value.tracks)) return false;
+  if (value.tracks.length > MAX_CAPTION_TRACKS) return false;
+  if (!value.tracks.every(isCaptionTrack)) return false;
+  if (value.videoId !== null && !isShortString(value.videoId, 128)) return false;
+  if (typeof value.isLive !== 'boolean') return false;
+  if (value.error !== undefined && !isShortString(value.error, 1000)) return false;
   return true;
 }
 
@@ -324,7 +383,7 @@ async function fetchTimedtextBody(
   fmt: string | null,
   signal: AbortSignal | undefined,
 ): Promise<string> {
-  const url = new URL(baseUrl, location.origin);
+  const url = getAllowedTimedtextUrl(baseUrl);
   if (fmt !== null) {
     url.searchParams.set('fmt', fmt);
   }
@@ -344,7 +403,7 @@ async function fetchTimedtextBody(
 function buildTrackMatcher(baseUrl: string): (url: string) => boolean {
   let target: URL | null = null;
   try {
-    target = new URL(baseUrl, location.origin);
+    target = getAllowedTimedtextUrl(baseUrl);
   } catch {
     target = null;
   }
@@ -355,11 +414,10 @@ function buildTrackMatcher(baseUrl: string): (url: string) => boolean {
   return (candidate: string) => {
     let u: URL;
     try {
-      u = new URL(candidate, location.origin);
+      u = getAllowedTimedtextUrl(candidate);
     } catch {
       return false;
     }
-    if (!u.pathname.includes('/api/timedtext')) return false;
     if (videoId && u.searchParams.get('v') !== videoId) return false;
     if (lang && u.searchParams.get('lang') !== lang) return false;
     if ((u.searchParams.get('kind') ?? '') !== kind) return false;

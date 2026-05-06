@@ -1,4 +1,5 @@
 import {
+  getAllowedTimedtextUrl,
   parseJson3,
   parseXmlCaptions,
   type CaptionCue,
@@ -127,7 +128,9 @@ export async function fetchCaptionsViaInnertube(
 
   // The ANDROID-client baseUrl normally includes `&fmt=srv3`. Strip it so
   // YouTube returns the default XML (srv3) without requiring pot signing.
-  const cleanUrl = track.baseUrl.replace(/&fmt=[^&]+/, '');
+  const cleanUrl = getAllowedTimedtextUrl(
+    track.baseUrl.replace(/&fmt=[^&]+/, ''),
+  );
   console.log(
     '[LST] innertube: track kind=' +
       (track.kind ?? 'manual') +
@@ -135,7 +138,7 @@ export async function fetchCaptionsViaInnertube(
       track.languageCode,
   );
 
-  const xmlRes = await fetch(cleanUrl, {
+  const xmlRes = await fetch(cleanUrl.toString(), {
     credentials: 'include',
     signal,
   });

@@ -1,6 +1,10 @@
 import type { ExtensionSettings } from './settings.ts';
 
-export const HARD_CODED_PROXY_BASE_URL = 'http://127.0.0.1:10531/v1';
+export const PROXY_BASE_URLS = [
+  'http://127.0.0.1:10531/v1',
+  'http://127.0.0.1:10532/v1',
+] as const;
+export const HARD_CODED_PROXY_BASE_URL = PROXY_BASE_URLS[0];
 export const TRANSLATION_CACHE_LIMIT = 120;
 
 export const BACKGROUND_MESSAGE_TYPES = {

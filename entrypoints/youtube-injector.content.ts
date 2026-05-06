@@ -4,6 +4,8 @@
 // (WXT #357) that otherwise makes manifest-declared MAIN-world content
 // scripts run too late to monkey-patch window.fetch.
 
+import { getOrCreateBridgeToken } from './youtube.content/bridgeToken.ts';
+
 export default defineContentScript({
   matches: ['https://www.youtube.com/*'],
   runAt: 'document_start',
@@ -17,12 +19,13 @@ export default defineContentScript({
       const script = document.createElement('script');
       script.src = url;
       script.async = false; // critical: preserve execution order
+      script.dataset.lstBridgeToken = getOrCreateBridgeToken();
+      // Remove the tag; the script keeps running after removal.
+      script.addEventListener('load', () => script.remove(), { once: true });
       const parent = document.head || document.documentElement;
       if (parent) {
         parent.prepend(script);
       }
-      // Remove the tag; the script keeps running after removal.
-      script.addEventListener('load', () => script.remove());
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('[LST] failed to inject page-world hook', error);

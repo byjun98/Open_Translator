@@ -5,7 +5,10 @@ import {
   type PolishSubtitleCuesResponse,
 } from '../../lib/messages';
 import {
-  SUBTITLE_EXPORT_STORAGE_PREFIX,
+  loadSubtitleExportPayload,
+  removeSubtitleExportPayload,
+} from '../../lib/subtitle-export-storage';
+import {
   buildSrt,
   formatSrtTimestamp,
   sanitizeFilename,
@@ -49,6 +52,7 @@ function App() {
   const [error, setError] = useState('');
   const [isPolishing, setIsPolishing] = useState(false);
   const [polishStatus, setPolishStatus] = useState('');
+  const [exportId, setExportId] = useState<string | null>(null);
 
   useEffect(() => {
     const id = new URLSearchParams(location.search).get('id');
@@ -57,18 +61,16 @@ function App() {
       return;
     }
 
-    const key = `${SUBTITLE_EXPORT_STORAGE_PREFIX}${id}`;
-    browser.storage.local
-      .get(key)
-      .then((stored) => {
-        const nextPayload = stored[key] as SubtitleExportPayload | undefined;
-        if (!nextPayload?.cues?.length) {
+    loadSubtitleExportPayload(id)
+      .then((nextPayload) => {
+        if (!nextPayload) {
           setError('자막 데이터를 찾지 못했어요. YouTube 탭에서 다시 내보내주세요.');
           return;
         }
         setPayload(nextPayload);
         setEditableCues(nextPayload.cues);
         setMode(nextPayload.recommendedMode ?? getInitialMode());
+        setExportId(id);
       })
       .catch((loadError) => {
         setError(
@@ -97,6 +99,15 @@ function App() {
         );
       }).length
     : 0;
+
+  function handleDownload() {
+    downloadText(filename, srt);
+    if (exportId) {
+      void removeSubtitleExportPayload(exportId)
+        .then(() => setExportId(null))
+        .catch(() => undefined);
+    }
+  }
 
   function updateCue(index: number, field: EditableField, value: string) {
     setEditableCues((current) =>
@@ -240,7 +251,7 @@ function App() {
           <button
             className="download-button"
             disabled={isPolishing}
-            onClick={() => downloadText(filename, srt)}
+            onClick={handleDownload}
             type="button">
             .srt 다운로드
           </button>

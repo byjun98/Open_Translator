@@ -1,12 +1,33 @@
 import { useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
-import { fetchProxyModels } from '../../lib/proxy-models';
+import {
+  fetchProxyModels,
+  type ProxyModelsResult,
+} from '../../lib/proxy-models';
 import {
   defaults,
   loadSettings,
   saveSettings,
   type ExtensionSettings,
 } from '../../lib/settings';
+
+function formatProxyLocation(baseUrl: string | undefined) {
+  if (!baseUrl) return 'localhost';
+  try {
+    const url = new URL(baseUrl);
+    return `${url.hostname}:${url.port || '443'}`;
+  } catch {
+    return baseUrl;
+  }
+}
+
+function formatProxyStatus(result: ProxyModelsResult) {
+  if (result.source === 'proxy') {
+    return `프록시 연결됨 (${formatProxyLocation(result.baseUrl)}). 모델 ${result.models.length}개`;
+  }
+
+  return `프록시 확인 필요. 기본 모델 ${result.models.length}개만 표시 중`;
+}
 
 function App() {
   const [settings, setSettings] = useState<ExtensionSettings>(defaults);
@@ -17,14 +38,14 @@ function App() {
   useEffect(() => {
     let mounted = true;
 
-    Promise.all([loadSettings(), fetchProxyModels()]).then(([next, models]) => {
+    Promise.all([loadSettings(), fetchProxyModels()]).then(([next, proxy]) => {
       if (!mounted) {
         return;
       }
 
       setSettings(next);
-      setModelOptions(Array.from(new Set([next.model, ...models])));
-      setStatus(`현재 설정을 바로 바꿀 수 있습니다. 사용 가능한 모델 ${models.length}개`);
+      setModelOptions(Array.from(new Set([next.model, ...proxy.models])));
+      setStatus(formatProxyStatus(proxy));
     });
 
     return () => {
