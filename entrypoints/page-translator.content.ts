@@ -25,6 +25,30 @@ const MUTATION_SCAN_DELAY_MS = 180;
 const OVERLAY_HOST_ID = 'open-translator-page-status';
 const STYLE_ID = 'open-translator-page-style';
 
+const DEFAULT_NOISE_SKIP_SELECTORS = [
+  '[aria-modal="true"]',
+  '[role="alert"]',
+  '[role="dialog"]',
+  '[role="tooltip"]',
+  '.ad',
+  '.ads',
+  '.advertisement',
+  '.banner-ad',
+  '.cookie',
+  '.cookie-banner',
+  '.newsletter',
+  '.popover',
+  '.promo',
+  '.share',
+  '.social',
+  '.sponsor',
+  '.toast',
+  '[class*="advert"]',
+  '[class*="cookie"]',
+  '[id*="advert"]',
+  '[id*="cookie"]',
+].join(',');
+
 const BASE_SKIP_SELECTOR = [
   'script',
   'style',
@@ -46,6 +70,7 @@ const BASE_SKIP_SELECTOR = [
   '[aria-hidden="true"]',
   `[data-open-translator-page="translation"]`,
   `#${OVERLAY_HOST_ID}`,
+  DEFAULT_NOISE_SKIP_SELECTORS,
 ].join(',');
 
 const PREFERRED_UNIT_TAGS = new Set([
@@ -119,16 +144,55 @@ const INLINE_PLACEHOLDER_TAGS = new Set([
   'VAR',
 ]);
 
+const MAIN_CONTENT_SELECTOR = [
+  'main',
+  'article',
+  '[role="main"]',
+  '[itemprop="articleBody"]',
+  '.article',
+  '.article-body',
+  '.content',
+  '.content-body',
+  '.docs-content',
+  '.documentation',
+  '.lesson-content',
+  '.main-content',
+  '.markdown-body',
+  '.post-content',
+  '.tutorial-content',
+].join(',');
+
+const LOW_PRIORITY_SELECTOR = [
+  'aside',
+  'footer',
+  'header',
+  'nav',
+  '[role="complementary"]',
+  '[role="navigation"]',
+  '.breadcrumb',
+  '.drawer',
+  '.menu',
+  '.nav',
+  '.navigation',
+  '.sidebar',
+  '.sidenav',
+  '.table-of-contents',
+  '.toc',
+].join(',');
+
 type SelectorRules = {
   includeSelectors: string[];
   skipSelectors: string[];
 };
+
+type PageViewMode = 'original' | 'translated';
 
 type TranslationUnit = {
   element: HTMLElement;
   id: number;
   originalChildren: Node[];
   placeholders: Map<string, HTMLElement>;
+  priority: number;
   source: string;
 };
 
@@ -136,6 +200,7 @@ type RestoreRecord =
   | {
       mode: 'replace';
       originalChildren: Node[];
+      translationChildren: Node[];
       unitElement: HTMLElement;
     }
   | {
@@ -169,12 +234,15 @@ let nextTextId = 1;
 let nextSessionId = 1;
 let currentSession: TranslationSession | null = null;
 let restoreRecords = new Map<HTMLElement, RestoreRecord>();
+let pageViewMode: PageViewMode = 'translated';
+let overlayDismissed = false;
 
 let overlayHost: HTMLElement | null = null;
 let overlayTitle: HTMLElement | null = null;
 let overlayDetail: HTMLElement | null = null;
 let overlayProgress: HTMLProgressElement | null = null;
 let overlayCancelButton: HTMLButtonElement | null = null;
+let overlayCloseButton: HTMLButtonElement | null = null;
 let overlayRestoreButton: HTMLButtonElement | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -219,6 +287,10 @@ function normalizeRules(rule?: PageTranslatorSiteRule): SelectorRules {
     includeSelectors: splitSelectors(rule?.includeSelectors ?? ''),
     skipSelectors: splitSelectors(rule?.skipSelectors ?? ''),
   };
+}
+
+function getElementSignature(element: HTMLElement) {
+  return `${element.id} ${Array.from(element.classList).join(' ')}`.toLowerCase();
 }
 
 function getPerformanceConfig(turboMode: boolean) {
@@ -310,6 +382,67 @@ function getVisibleText(element: HTMLElement) {
   return normalizeTextForRequest(element.textContent ?? '');
 }
 
+function getTranslationPriority(element: HTMLElement) {
+  const rect = element.getBoundingClientRect();
+  let priority = 0;
+
+  if (closestSelector(element, MAIN_CONTENT_SELECTOR)) {
+    priority += 900;
+  }
+
+  if (closestSelector(element, LOW_PRIORITY_SELECTOR)) {
+    priority -= 900;
+  }
+
+  let current: HTMLElement | null = element;
+  while (current) {
+    const signature = getElementSignature(current);
+    if (
+      /\b(article|body|chapter|content|doc|docs|lesson|main|markdown|post|tutorial)\b/.test(
+        signature,
+      )
+    ) {
+      priority += 180;
+      break;
+    }
+    current = current.parentElement;
+  }
+
+  current = element;
+  while (current) {
+    const signature = getElementSignature(current);
+    if (
+      /\b(aside|breadcrumb|drawer|menu|nav|rail|sidebar|sidenav|stepper|toc)\b/.test(
+        signature,
+      )
+    ) {
+      priority -= 420;
+      break;
+    }
+    current = current.parentElement;
+  }
+
+  if (rect.width >= window.innerWidth * 0.42) {
+    priority += 180;
+  }
+
+  if (rect.width > 0 && window.innerWidth > 0) {
+    const viewportCenter = window.innerWidth / 2;
+    const elementCenter = rect.left + rect.width / 2;
+    const distanceRatio = Math.min(
+      Math.abs(elementCenter - viewportCenter) / viewportCenter,
+      1,
+    );
+    priority += Math.round((1 - distanceRatio) * 160);
+  }
+
+  if (rect.top >= -80 && rect.top <= window.innerHeight * 0.75) {
+    priority += 120;
+  }
+
+  return priority;
+}
+
 function getDirectText(element: HTMLElement) {
   return normalizeTextForRequest(
     Array.from(element.childNodes)
@@ -389,7 +522,16 @@ function getScanRoots(rules: SelectorRules) {
     return querySelectorList(document, rules.includeSelectors);
   }
 
-  return document.body ? [document.body] : [];
+  const roots = new Set<HTMLElement>();
+  querySelectorList(document, [MAIN_CONTENT_SELECTOR]).forEach((root) => {
+    roots.add(root);
+  });
+
+  if (document.body) {
+    roots.add(document.body);
+  }
+
+  return Array.from(roots);
 }
 
 function collectCandidateElements(root: HTMLElement, rules: SelectorRules) {
@@ -485,8 +627,15 @@ function ensureOverlay() {
 
       strong {
         display: block;
-        margin-bottom: 4px;
         font-size: 14px;
+      }
+
+      .title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 4px;
       }
 
       p {
@@ -527,13 +676,27 @@ function ensureOverlay() {
         background: rgba(255, 255, 255, 0.12);
       }
 
+      button.icon {
+        flex: 0 0 auto;
+        width: 28px;
+        min-height: 28px;
+        padding: 0;
+        color: rgba(238, 244, 251, 0.82);
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 16px;
+        line-height: 1;
+      }
+
       button:disabled {
         cursor: default;
         opacity: 0.52;
       }
     </style>
     <section class="panel" aria-live="polite">
-      <strong data-role="title">페이지 번역</strong>
+      <div class="title-row">
+        <strong data-role="title">페이지 번역</strong>
+        <button aria-label="상태 창 닫기" class="icon" data-role="close" type="button">×</button>
+      </div>
       <p data-role="detail">준비 중...</p>
       <progress data-role="progress" max="1" value="0"></progress>
       <div class="actions">
@@ -547,16 +710,30 @@ function ensureOverlay() {
   overlayDetail = shadow.querySelector('[data-role="detail"]');
   overlayProgress = shadow.querySelector('[data-role="progress"]');
   overlayCancelButton = shadow.querySelector('[data-role="cancel"]');
+  overlayCloseButton = shadow.querySelector('[data-role="close"]');
   overlayRestoreButton = shadow.querySelector('[data-role="restore"]');
 
   overlayCancelButton?.addEventListener('click', () => {
     stopCurrentSession('페이지 번역 중지', '이미 바뀐 문장은 그대로 두었습니다.');
   });
   overlayRestoreButton?.addEventListener('click', () => {
-    restoreOriginals();
+    togglePageView();
+  });
+  overlayCloseButton?.addEventListener('click', () => {
+    overlayDismissed = true;
+    if (overlayHost) {
+      overlayHost.hidden = true;
+    }
   });
 
   document.documentElement.append(overlayHost);
+}
+
+function showOverlayPanel() {
+  overlayDismissed = false;
+  if (overlayHost) {
+    overlayHost.hidden = false;
+  }
 }
 
 function updateOverlay(
@@ -566,6 +743,9 @@ function updateOverlay(
   total: number,
 ) {
   ensureOverlay();
+  if (overlayHost) {
+    overlayHost.hidden = overlayDismissed;
+  }
 
   if (overlayTitle) overlayTitle.textContent = title;
   if (overlayDetail) overlayDetail.textContent = detail;
@@ -574,9 +754,17 @@ function updateOverlay(
     overlayProgress.value = Math.min(completed, total);
   }
   if (overlayCancelButton) overlayCancelButton.disabled = !currentSession;
-  if (overlayRestoreButton) {
-    overlayRestoreButton.disabled = restoreRecords.size === 0;
+  updateRestoreButtonState();
+}
+
+function updateRestoreButtonState() {
+  if (!overlayRestoreButton) {
+    return;
   }
+
+  overlayRestoreButton.disabled = restoreRecords.size === 0;
+  overlayRestoreButton.textContent =
+    pageViewMode === 'translated' ? '원문 보기' : '번역 보기';
 }
 
 function updateSessionOverlay(session: TranslationSession) {
@@ -610,15 +798,78 @@ function stopCurrentSession(title?: string, detail?: string) {
   );
 }
 
-function restoreOriginals(showOverlay = true) {
-  stopCurrentSession();
+function cloneNodes(nodes: Node[]) {
+  return nodes.map((node) => node.cloneNode(true));
+}
+
+function setPageViewMode(viewMode: PageViewMode, showOverlay = true) {
+  if (restoreRecords.size === 0) {
+    return false;
+  }
+
+  pageViewMode = viewMode;
 
   for (const [element, record] of restoreRecords) {
     if (record.mode === 'replace') {
       if (element.isConnected) {
         element.replaceChildren(
-          ...record.originalChildren.map((node) => node.cloneNode(true)),
+          ...cloneNodes(
+            viewMode === 'original'
+              ? record.originalChildren
+              : record.translationChildren,
+          ),
         );
+        element.setAttribute('data-open-translator-page-unit', 'true');
+      }
+      continue;
+    }
+
+    record.wrapper.hidden = viewMode === 'original';
+  }
+
+  updateRestoreButtonState();
+
+  if (showOverlay) {
+    showOverlayPanel();
+    updateOverlay(
+      viewMode === 'original' ? '원문 보기' : '번역 보기',
+      viewMode === 'original'
+        ? '번역 결과는 보관했습니다. 다시 누르면 번역본으로 돌아갑니다.'
+        : '보관된 번역본을 다시 표시했습니다.',
+      1,
+      1,
+    );
+  }
+
+  return true;
+}
+
+function togglePageView(): PageTranslatorContentResponse {
+  stopCurrentSession();
+
+  const nextViewMode: PageViewMode =
+    pageViewMode === 'translated' ? 'original' : 'translated';
+
+  if (!setPageViewMode(nextViewMode)) {
+    return {
+      ok: false,
+      message: '전환할 번역 결과가 없습니다.',
+    };
+  }
+
+  return {
+    ok: true,
+    viewMode: pageViewMode,
+  };
+}
+
+function clearTranslations(showOverlay = true) {
+  stopCurrentSession();
+
+  for (const [element, record] of restoreRecords) {
+    if (record.mode === 'replace') {
+      if (element.isConnected) {
+        element.replaceChildren(...cloneNodes(record.originalChildren));
         element.removeAttribute('data-open-translator-page-unit');
       }
       continue;
@@ -629,8 +880,11 @@ function restoreOriginals(showOverlay = true) {
   }
 
   restoreRecords = new Map();
+  pageViewMode = 'translated';
+  updateRestoreButtonState();
 
   if (showOverlay) {
+    showOverlayPanel();
     updateOverlay('원문 복원 완료', '번역된 문단을 원래 상태로 되돌렸습니다.', 1, 1);
   }
 }
@@ -673,7 +927,10 @@ function serializeUnit(element: HTMLElement) {
   return { placeholders, source };
 }
 
-function createTranslationUnit(element: HTMLElement): TranslationUnit | null {
+function createTranslationUnit(
+  element: HTMLElement,
+  priority: number,
+): TranslationUnit | null {
   const { placeholders, source } = serializeUnit(element);
   if (!source || !hasLanguageText(source) || isProbablyNonContent(source)) {
     return null;
@@ -686,6 +943,7 @@ function createTranslationUnit(element: HTMLElement): TranslationUnit | null {
       node.cloneNode(true),
     ),
     placeholders,
+    priority,
     source,
   };
 }
@@ -754,6 +1012,7 @@ function applyTranslation(unit: TranslationUnit, translation: string, mode: Page
     wrapper.dataset.display = isInlineDisplayElement(unit.element)
       ? 'inline'
       : 'block';
+    wrapper.hidden = pageViewMode === 'original';
     wrapper.append(fragment);
 
     if (shouldAppendBilingualInside(unit.element)) {
@@ -770,12 +1029,23 @@ function applyTranslation(unit: TranslationUnit, translation: string, mode: Page
     return true;
   }
 
+  const translationChildren = Array.from(fragment.childNodes).map((node) =>
+    node.cloneNode(true),
+  );
+
   restoreRecords.set(unit.element, {
     mode,
     originalChildren: unit.originalChildren,
+    translationChildren,
     unitElement: unit.element,
   });
-  unit.element.replaceChildren(fragment);
+  unit.element.replaceChildren(
+    ...cloneNodes(
+      pageViewMode === 'original'
+        ? unit.originalChildren
+        : translationChildren,
+    ),
+  );
   return true;
 }
 
@@ -866,25 +1136,33 @@ function drainQueue(session: TranslationSession) {
   }
 }
 
-function enqueueElement(session: TranslationSession, element: HTMLElement) {
+function enqueueElement(
+  session: TranslationSession,
+  element: HTMLElement,
+  shouldDrain = true,
+) {
   if (
     session.cancelled ||
     currentSession?.id !== session.id ||
     session.processedElements.has(element)
   ) {
-    return;
+    return false;
   }
 
   session.processedElements.add(element);
-  const unit = createTranslationUnit(element);
+  const unit = createTranslationUnit(element, getTranslationPriority(element));
   if (!unit) {
     session.completedCount += 1;
     updateSessionOverlay(session);
-    return;
+    return false;
   }
 
   session.queue.push(unit);
-  drainQueue(session);
+  session.queue.sort((left, right) => right.priority - left.priority);
+  if (shouldDrain) {
+    drainQueue(session);
+  }
+  return true;
 }
 
 function observeCandidate(session: TranslationSession, element: HTMLElement) {
@@ -962,7 +1240,7 @@ async function translatePage(
     type: typeof PAGE_TRANSLATOR_CONTENT_MESSAGE_TYPES.translatePage;
   },
 ): Promise<PageTranslatorContentResponse> {
-  restoreOriginals(false);
+  clearTranslations(false);
   ensurePageStyles();
 
   const savedSettings = await loadPageTranslatorSettings();
@@ -974,6 +1252,7 @@ async function translatePage(
     savedSettings.siteRules[location.hostname.toLowerCase()];
   const rules = normalizeRules(siteRule);
   const performance = getPerformanceConfig(turboMode);
+  showOverlayPanel();
 
   const sessionId = nextSessionId++;
   const session: TranslationSession = {
@@ -985,12 +1264,18 @@ async function translatePage(
     id: sessionId,
     intersectionObserver: new IntersectionObserver(
       (entries, observer) => {
+        let hasQueuedUnit = false;
         for (const entry of entries) {
           if (!entry.isIntersecting || !(entry.target instanceof HTMLElement)) {
             continue;
           }
           observer.unobserve(entry.target);
-          enqueueElement(session, entry.target);
+          hasQueuedUnit =
+            enqueueElement(session, entry.target, false) || hasQueuedUnit;
+        }
+
+        if (hasQueuedUnit) {
+          drainQueue(session);
         }
       },
       {
@@ -1055,8 +1340,7 @@ async function handleContentMessage(
     return { ok: true };
   }
 
-  restoreOriginals();
-  return { ok: true };
+  return togglePageView();
 }
 
 export default defineContentScript({

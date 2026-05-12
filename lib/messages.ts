@@ -143,6 +143,7 @@ export type PageTranslatorContentResponse =
       ok: true;
       translatedCount?: number;
       totalCount?: number;
+      viewMode?: 'original' | 'translated';
     }
   | {
       ok: false;

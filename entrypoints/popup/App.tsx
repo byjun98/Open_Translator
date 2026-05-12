@@ -217,7 +217,11 @@ function App() {
         throw new Error(response.message);
       }
 
-      setPageStatus('현재 페이지를 원문으로 복원했습니다.');
+      setPageStatus(
+        response.viewMode === 'original'
+          ? '현재 페이지를 원문 보기로 전환했습니다.'
+          : '현재 페이지를 번역 보기로 전환했습니다.',
+      );
     } catch (error) {
       setPageStatus(formatPageTranslatorError(error));
     }
@@ -271,7 +275,7 @@ function App() {
             disabled={isPageTranslating}
             type="button"
             onClick={() => void handleRestorePage()}>
-            원문 복원
+            원문 ↔ 번역
           </button>
         </div>
 
