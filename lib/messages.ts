@@ -1,4 +1,8 @@
 import type { ExtensionSettings } from './settings.ts';
+import type {
+  PageTranslatorMode,
+  PageTranslatorSiteRule,
+} from './page-translator-settings.ts';
 
 export const PROXY_BASE_URLS = [
   'http://127.0.0.1:10531/v1',
@@ -10,9 +14,16 @@ export const TRANSLATION_CACHE_LIMIT = 120;
 export const BACKGROUND_MESSAGE_TYPES = {
   getSettings: 'settings:get',
   openSubtitlePreview: 'subtitle-preview:open',
+  translatePageTexts: 'page:translate-texts',
   polishSubtitleCues: 'subtitle:polish-cues',
   translateSubtitleCues: 'subtitle:translate-cues',
   translateSubtitle: 'subtitle:translate',
+} as const;
+
+export const PAGE_TRANSLATOR_CONTENT_MESSAGE_TYPES = {
+  cancelTranslation: 'page-translator:cancel',
+  restorePage: 'page-translator:restore',
+  translatePage: 'page-translator:translate',
 } as const;
 
 export type BackgroundMessageType =
@@ -41,6 +52,20 @@ export interface TranslateSubtitleMessage {
     pageUrl?: string;
     sourceLanguageHint?: string;
     force?: boolean;
+  };
+}
+
+export interface TranslatePageTextPayload {
+  id: number;
+  text: string;
+}
+
+export interface TranslatePageTextsMessage {
+  type: typeof BACKGROUND_MESSAGE_TYPES.translatePageTexts;
+  payload: {
+    items: TranslatePageTextPayload[];
+    pageUrl?: string;
+    targetLanguage?: string;
   };
 }
 
@@ -93,8 +118,36 @@ export type BackgroundRequest =
   | GetSettingsMessage
   | OpenSubtitlePreviewMessage
   | PolishSubtitleCuesMessage
+  | TranslatePageTextsMessage
   | TranslateSubtitleCuesMessage
   | TranslateSubtitleMessage;
+
+export type PageTranslatorContentMessage =
+  | {
+      type: typeof PAGE_TRANSLATOR_CONTENT_MESSAGE_TYPES.cancelTranslation;
+    }
+  | {
+      type: typeof PAGE_TRANSLATOR_CONTENT_MESSAGE_TYPES.restorePage;
+    }
+  | {
+      type: typeof PAGE_TRANSLATOR_CONTENT_MESSAGE_TYPES.translatePage;
+      payload?: {
+        mode?: PageTranslatorMode;
+        siteRule?: PageTranslatorSiteRule;
+        turboMode?: boolean;
+      };
+    };
+
+export type PageTranslatorContentResponse =
+  | {
+      ok: true;
+      translatedCount?: number;
+      totalCount?: number;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
 
 export interface BackgroundErrorDetails {
   code: BackgroundErrorCode;
@@ -148,6 +201,19 @@ export type OpenSubtitlePreviewResponse =
     >
   | BackgroundErrorResponse<typeof BACKGROUND_MESSAGE_TYPES.openSubtitlePreview>;
 
+export type TranslatePageTextsResponse =
+  | BackgroundSuccessResponse<
+      typeof BACKGROUND_MESSAGE_TYPES.translatePageTexts,
+      {
+        items: Array<{
+          id: number;
+          translation: string;
+        }>;
+        targetLanguage: string;
+      }
+    >
+  | BackgroundErrorResponse<typeof BACKGROUND_MESSAGE_TYPES.translatePageTexts>;
+
 export type PolishSubtitleCuesResponse =
   | BackgroundSuccessResponse<
       typeof BACKGROUND_MESSAGE_TYPES.polishSubtitleCues,
@@ -176,6 +242,7 @@ export type BackgroundResponse =
   | GetSettingsResponse
   | OpenSubtitlePreviewResponse
   | PolishSubtitleCuesResponse
+  | TranslatePageTextsResponse
   | TranslateSubtitleCuesResponse
   | TranslateSubtitleResponse
   | BackgroundErrorResponse<'unknown'>;
@@ -254,6 +321,30 @@ export function isBackgroundRequest(value: unknown): value is BackgroundRequest 
       (sourceLanguageHint === undefined || typeof sourceLanguageHint === 'string') &&
       (targetLanguage === undefined || typeof targetLanguage === 'string') &&
       (title === undefined || typeof title === 'string')
+    );
+  }
+
+  if (value.type === BACKGROUND_MESSAGE_TYPES.translatePageTexts) {
+    if (!isRecord(value.payload) || !Array.isArray(value.payload.items)) {
+      return false;
+    }
+
+    const { items, pageUrl, targetLanguage } = value.payload;
+    return (
+      items.length > 0 &&
+      items.length <= 80 &&
+      items.every((item) => {
+        if (!isRecord(item)) return false;
+        return (
+          typeof item.id === 'number' &&
+          Number.isInteger(item.id) &&
+          typeof item.text === 'string' &&
+          item.text.trim().length > 0 &&
+          item.text.length <= 4000
+        );
+      }) &&
+      (pageUrl === undefined || typeof pageUrl === 'string') &&
+      (targetLanguage === undefined || typeof targetLanguage === 'string')
     );
   }
 

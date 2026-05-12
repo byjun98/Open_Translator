@@ -6,8 +6,8 @@ export default defineConfig({
   manifest: {
     name: 'Open_Translator',
     description:
-      'Translate YouTube subtitles through a local OpenAI-compatible proxy running on your machine.',
-    permissions: ['storage'],
+      'Translate YouTube subtitles and webpage text through a local OpenAI-compatible proxy running on your machine.',
+    permissions: ['storage', 'activeTab'],
     host_permissions: ['http://127.0.0.1/*'],
     web_accessible_resources: [
       {

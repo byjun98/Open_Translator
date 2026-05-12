@@ -13,12 +13,13 @@
 
 body {
   margin: 0;
-  min-width: 320px;
+  min-width: 360px;
 }
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -88,7 +89,8 @@ select {
 }
 
 .popup-field input,
-.popup-field select {
+.popup-field select,
+.popup-field textarea {
   width: 100%;
   padding: 10px 12px;
   border-radius: 12px;
@@ -97,9 +99,20 @@ select {
   color: #f6f8fc;
 }
 
+.popup-field textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
 .popup-check {
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+.popup-actions {
+  display: grid;
+  grid-template-columns: 1fr 0.78fr;
   gap: 8px;
 }
 
@@ -111,4 +124,26 @@ select {
   color: #0e1723;
   background: linear-gradient(135deg, #ffc96f, #ffb449);
   cursor: pointer;
+}
+
+.popup-button--secondary {
+  color: #f6f8fc;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.popup-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.popup-rule-box {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.popup-rule-box strong {
+  font-size: 13px;
 }

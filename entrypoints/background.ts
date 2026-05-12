@@ -10,6 +10,8 @@ import {
   type OpenSubtitlePreviewResponse,
   type PolishSubtitleCuesMessage,
   type PolishSubtitleCuesResponse,
+  type TranslatePageTextsMessage,
+  type TranslatePageTextsResponse,
   type TranslateSubtitleCuesMessage,
   type TranslateSubtitleCuesResponse,
   type TranslateSubtitleMessage,
@@ -19,6 +21,13 @@ import { requestChatCompletion } from '../lib/openai.ts';
 import { loadSettings } from '../lib/settings.ts';
 
 const translationCache = new Map<string, string>();
+const pageTranslationCache = new Map<string, string>();
+const PAGE_TRANSLATION_CACHE_STORAGE_KEY = 'pageTranslationCache:v1';
+const PAGE_TRANSLATION_CACHE_LIMIT = 1800;
+
+let pageTranslationCacheLoaded = false;
+let pageTranslationCacheLoadPromise: Promise<void> | null = null;
+let pageTranslationCachePersistPromise: Promise<void> = Promise.resolve();
 
 function normalizeSourceText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -55,6 +64,99 @@ function rememberTranslation(key: string, value: string) {
   if (typeof oldestKey === 'string') {
     translationCache.delete(oldestKey);
   }
+}
+
+async function createPageTranslationCacheKey(
+  model: string,
+  targetLanguage: string,
+  text: string,
+) {
+  const normalized = JSON.stringify([
+    'page',
+    model,
+    targetLanguage,
+    normalizeSourceText(text),
+  ]);
+  const encoded = new TextEncoder().encode(normalized);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function ensurePageTranslationCacheLoaded() {
+  if (pageTranslationCacheLoaded) {
+    return;
+  }
+
+  pageTranslationCacheLoadPromise ??= (async () => {
+    const stored = await browser.storage.local.get(
+      PAGE_TRANSLATION_CACHE_STORAGE_KEY,
+    );
+    const entries = stored[PAGE_TRANSLATION_CACHE_STORAGE_KEY];
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (
+          Array.isArray(entry) &&
+          typeof entry[0] === 'string' &&
+          typeof entry[1] === 'string'
+        ) {
+          pageTranslationCache.set(entry[0], entry[1]);
+        }
+      }
+    }
+
+    pageTranslationCacheLoaded = true;
+  })();
+
+  await pageTranslationCacheLoadPromise;
+}
+
+async function persistPageTranslationCache() {
+  pageTranslationCachePersistPromise = pageTranslationCachePersistPromise
+    .catch(() => undefined)
+    .then(async () => {
+      while (pageTranslationCache.size > PAGE_TRANSLATION_CACHE_LIMIT) {
+        const oldestKey = pageTranslationCache.keys().next().value;
+        if (typeof oldestKey !== 'string') {
+          break;
+        }
+        pageTranslationCache.delete(oldestKey);
+      }
+
+      await browser.storage.local.set({
+        [PAGE_TRANSLATION_CACHE_STORAGE_KEY]: Array.from(pageTranslationCache),
+      });
+    });
+
+  await pageTranslationCachePersistPromise;
+}
+
+async function getCachedPageTranslation(
+  model: string,
+  targetLanguage: string,
+  text: string,
+) {
+  await ensurePageTranslationCacheLoaded();
+  const key = await createPageTranslationCacheKey(model, targetLanguage, text);
+  const cached = pageTranslationCache.get(key);
+  return { cached, key };
+}
+
+async function rememberPageTranslations(entries: Array<[string, string]>) {
+  if (entries.length === 0) {
+    return;
+  }
+
+  await ensurePageTranslationCacheLoaded();
+  for (const [key, value] of entries) {
+    if (pageTranslationCache.has(key)) {
+      pageTranslationCache.delete(key);
+    }
+    pageTranslationCache.set(key, value);
+  }
+
+  await persistPageTranslationCache();
 }
 
 function renderPrompt(
@@ -152,6 +254,29 @@ function parsePolishedCueResponse(text: string) {
   });
 }
 
+function parsePageTranslationResponse(text: string) {
+  const parsed = parseJsonArray(text);
+  if (!Array.isArray(parsed)) {
+    throw new Error('The model response was not a JSON array.');
+  }
+
+  return parsed.map((item) => {
+    if (
+      typeof item !== 'object' ||
+      item === null ||
+      typeof (item as { id?: unknown }).id !== 'number' ||
+      typeof (item as { translation?: unknown }).translation !== 'string'
+    ) {
+      throw new Error('The model returned an invalid page translation item.');
+    }
+
+    return {
+      id: (item as { id: number }).id,
+      translation: (item as { translation: string }).translation.trim(),
+    };
+  });
+}
+
 function buildPolishMessages(
   message: PolishSubtitleCuesMessage,
   targetLanguage: string,
@@ -217,6 +342,37 @@ ${JSON.stringify(cuePayload)}`,
   ];
 }
 
+function buildPageTranslateMessages(
+  message: TranslatePageTextsMessage,
+  targetLanguage: string,
+) {
+  const effectiveTargetLanguage =
+    message.payload.targetLanguage?.trim() || targetLanguage;
+  const textPayload = message.payload.items.map((item) => ({
+    id: item.id,
+    text: item.text,
+  }));
+
+  return [
+    {
+      role: 'system' as const,
+      content:
+        'You translate webpage text fragments. Preserve each id exactly. Preserve the original tone, formality, politeness level, and writing style. Do not summarize, embellish, or change the speaker intent. Preserve placeholder tags such as <x0>...</x0>, URLs, numbers, product names, and UI intent. Return only valid JSON and do not add explanations.',
+    },
+    {
+      role: 'user' as const,
+      content: `Target language: ${effectiveTargetLanguage}
+Page URL: ${message.payload.pageUrl || ''}
+
+Translate each text field. Keep the same id values. Return ONLY a JSON array shaped like:
+[{"id":1,"translation":"..."}, ...]
+
+Text fragments:
+${JSON.stringify(textPayload)}`,
+    },
+  ];
+}
+
 async function handleGetSettingsMessage(): Promise<GetSettingsResponse> {
   const settings = await loadSettings();
   return createSuccessResponse(BACKGROUND_MESSAGE_TYPES.getSettings, {
@@ -237,6 +393,104 @@ async function handleOpenSubtitlePreviewMessage(
     BACKGROUND_MESSAGE_TYPES.openSubtitlePreview,
     { opened: true },
   );
+}
+
+async function handleTranslatePageTextsMessage(
+  message: TranslatePageTextsMessage,
+): Promise<TranslatePageTextsResponse> {
+  const settings = await loadSettings();
+  if (!settings.enabled) {
+    return createErrorResponse(
+      message.type,
+      'TRANSLATOR_DISABLED',
+      'The translator is disabled in the extension options.',
+    );
+  }
+
+  const targetLanguage =
+    message.payload.targetLanguage?.trim() || settings.targetLanguage;
+  const cachedItems: Array<{ id: number; translation: string }> = [];
+  const missingItems: TranslatePageTextsMessage['payload']['items'] = [];
+  const cacheKeysById = new Map<number, string>();
+
+  for (const item of message.payload.items) {
+    const { cached, key } = await getCachedPageTranslation(
+      settings.model,
+      targetLanguage,
+      item.text,
+    );
+    if (cached !== undefined) {
+      cachedItems.push({
+        id: item.id,
+        translation: cached,
+      });
+    } else {
+      missingItems.push(item);
+      cacheKeysById.set(item.id, key);
+    }
+  }
+
+  if (missingItems.length === 0) {
+    return createSuccessResponse(message.type, {
+      items: cachedItems,
+      targetLanguage,
+    });
+  }
+
+  const completion = await requestChatCompletion({
+    model: settings.model,
+    timeoutMs: Math.max(settings.requestTimeoutMs, 60000),
+    messages: buildPageTranslateMessages(
+      {
+        ...message,
+        payload: {
+          ...message.payload,
+          items: missingItems,
+        },
+      },
+      targetLanguage,
+    ),
+  });
+
+  if (!completion.ok) {
+    return createErrorResponse(
+      message.type,
+      completion.error.code,
+      completion.error.message,
+      {
+        details: completion.error.details,
+        retriable: completion.error.retriable,
+        status: completion.error.status,
+      },
+    );
+  }
+
+  try {
+    const translatedItems = parsePageTranslationResponse(completion.data.content);
+    await rememberPageTranslations(
+      translatedItems
+        .map((item) => {
+          const cacheKey = cacheKeysById.get(item.id);
+          return cacheKey && item.translation
+            ? ([cacheKey, item.translation] as [string, string])
+            : undefined;
+        })
+        .filter((item): item is [string, string] => Array.isArray(item)),
+    );
+
+    return createSuccessResponse(message.type, {
+      items: [...cachedItems, ...translatedItems],
+      targetLanguage,
+    });
+  } catch (error) {
+    return createErrorResponse(
+      message.type,
+      'INVALID_REQUEST',
+      error instanceof Error
+        ? error.message
+        : 'The model returned invalid page translations.',
+    );
+  }
 }
 
 async function handleTranslateSubtitleCuesMessage(
@@ -408,6 +662,8 @@ async function handleRuntimeMessage(message: unknown): Promise<BackgroundRespons
         return await handleGetSettingsMessage();
       case BACKGROUND_MESSAGE_TYPES.openSubtitlePreview:
         return await handleOpenSubtitlePreviewMessage(message);
+      case BACKGROUND_MESSAGE_TYPES.translatePageTexts:
+        return await handleTranslatePageTextsMessage(message);
       case BACKGROUND_MESSAGE_TYPES.polishSubtitleCues:
         return await handlePolishSubtitleCuesMessage(message);
       case BACKGROUND_MESSAGE_TYPES.translateSubtitleCues:
