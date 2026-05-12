@@ -225,6 +225,7 @@ type TranslationSession = {
   queue: TranslationUnit[];
   rules: SelectorRules;
   scanTimer: number | null;
+  skippedCount: number;
   totalCount: number;
   translatedCount: number;
   turboMode: boolean;
@@ -767,13 +768,39 @@ function updateRestoreButtonState() {
     pageViewMode === 'translated' ? '원문 보기' : '번역 보기';
 }
 
+function isSessionFinished(session: TranslationSession) {
+  return (
+    session.completedCount >= session.totalCount &&
+    session.queue.length === 0 &&
+    session.activeBatchCount === 0
+  );
+}
+
 function updateSessionOverlay(session: TranslationSession) {
+  const finished = isSessionFinished(session);
+  const skippedMessage =
+    session.skippedCount > 0 ? `, ${session.skippedCount}개 건너뜀` : '';
+
   updateOverlay(
-    '페이지 번역 중',
-    `${session.translatedCount}/${session.totalCount}개 문단 번역됨. 보이는 문단부터 처리합니다.`,
+    finished ? '페이지 번역 완료' : '페이지 번역 중',
+    finished
+      ? `${session.completedCount}/${session.totalCount}개 문단 처리 완료 (${session.translatedCount}개 번역${skippedMessage}).`
+      : `${session.completedCount}/${session.totalCount}개 문단 처리됨 (${session.translatedCount}개 번역${skippedMessage}). 보이는 문단부터 처리합니다.`,
     session.completedCount,
     session.totalCount,
   );
+
+  if (finished) {
+    session.cancelled = true;
+    session.intersectionObserver.disconnect();
+    session.mutationObserver.disconnect();
+    if (session.scanTimer !== null) {
+      window.clearTimeout(session.scanTimer);
+      session.scanTimer = null;
+    }
+    currentSession = null;
+    if (overlayCancelButton) overlayCancelButton.disabled = true;
+  }
 }
 
 function stopCurrentSession(title?: string, detail?: string) {
@@ -1116,6 +1143,8 @@ function drainQueue(session: TranslationSession) {
         const translation = translationsById.get(unit.id);
         if (translation && applyTranslation(unit, translation, session.mode)) {
           session.translatedCount += 1;
+        } else {
+          session.skippedCount += 1;
         }
         session.completedCount += 1;
       }
@@ -1131,6 +1160,9 @@ function drainQueue(session: TranslationSession) {
     })
     .finally(() => {
       session.activeBatchCount = Math.max(0, session.activeBatchCount - 1);
+      if (!session.cancelled && currentSession?.id === session.id) {
+        updateSessionOverlay(session);
+      }
       drainQueue(session);
     });
   }
@@ -1152,6 +1184,7 @@ function enqueueElement(
   session.processedElements.add(element);
   const unit = createTranslationUnit(element, getTranslationPriority(element));
   if (!unit) {
+    session.skippedCount += 1;
     session.completedCount += 1;
     updateSessionOverlay(session);
     return false;
@@ -1292,6 +1325,7 @@ async function translatePage(
     queue: [],
     rules,
     scanTimer: null,
+    skippedCount: 0,
     totalCount: 0,
     translatedCount: 0,
     turboMode,
